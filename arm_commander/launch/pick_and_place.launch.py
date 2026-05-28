@@ -19,7 +19,7 @@ def get_param_from_move_group(param_name: str) -> str:
     return value
 
 
-def run_test2_moveit(context: LaunchContext):
+def run_pick_and_place(context: LaunchContext):
     urdf = get_param_from_move_group("robot_description")
     srdf = get_param_from_move_group("robot_description_semantic")
 
@@ -32,7 +32,7 @@ def run_test2_moveit(context: LaunchContext):
     return [
         Node(
             package="arm_commander",
-            executable="test2_moveit",
+            executable="pick_and_place",
             name="openarm_commander",
             output="screen",
             parameters=[
@@ -48,5 +48,5 @@ def run_test2_moveit(context: LaunchContext):
 
 def generate_launch_description():
     return LaunchDescription([
-        OpaqueFunction(function=run_test2_moveit)
+        OpaqueFunction(function=run_pick_and_place)
     ])

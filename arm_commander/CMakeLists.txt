@@ -29,11 +29,11 @@ ament_target_dependencies(commander_lib
   geometry_msgs
   std_msgs)
 
-add_executable(test_moveit src/test_moveit.cpp)
-target_link_libraries(test_moveit commander_lib)
-target_include_directories(test_moveit PRIVATE
+add_executable(pick_and_place src/pick_and_place.cpp)
+target_link_libraries(pick_and_place commander_lib)
+target_include_directories(pick_and_place PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include)
-ament_target_dependencies(test_moveit
+ament_target_dependencies(pick_and_place
   ament_index_cpp
   rclcpp
   moveit_ros_planning_interface
@@ -41,22 +41,11 @@ ament_target_dependencies(test_moveit
   geometry_msgs
   std_msgs)
 
-add_executable(test2_moveit src/test2_moveit.cpp)
-target_link_libraries(test2_moveit commander_lib)
-target_include_directories(test2_moveit PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include)
-ament_target_dependencies(test2_moveit
-  ament_index_cpp
-  rclcpp
-  moveit_ros_planning_interface
-  example_interfaces
-  geometry_msgs
-  std_msgs)
+
 
 install(TARGETS
   commander_lib
-  test_moveit
-  test2_moveit
+  pick_and_place
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY include/
