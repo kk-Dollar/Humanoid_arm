@@ -13,6 +13,12 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(example_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(image_transport REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 
 include_directories(include)
 
@@ -41,17 +47,40 @@ ament_target_dependencies(pick_and_place
   geometry_msgs
   std_msgs)
 
+add_executable(aruco_pick_and_place src/aruco_pick_and_place.cpp)
+target_link_libraries(aruco_pick_and_place commander_lib)
+target_include_directories(aruco_pick_and_place PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include)
+ament_target_dependencies(aruco_pick_and_place
+  rclcpp
+  moveit_ros_planning_interface
+  geometry_msgs
+  std_msgs
+  sensor_msgs
+  tf2_ros
+  tf2_geometry_msgs
+  ament_index_cpp)
 
 
 install(TARGETS
   commander_lib
   pick_and_place
+  aruco_pick_and_place
   DESTINATION lib/${PROJECT_NAME})
+
+install(PROGRAMS
+  scripts/aruco_detector.py
+  scripts/camera_publisher.py
+  scripts/aruco_pose_visualizer.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY include/
   DESTINATION include)
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch)
+install(DIRECTORY mujoco/
+  DESTINATION share/${PROJECT_NAME}/mujoco)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

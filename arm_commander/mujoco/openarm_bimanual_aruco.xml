@@ -1,0 +1,52 @@
+<!--
+  NEW FILE — created for ArUco perception pipeline
+  Does NOT replace or modify any existing file
+
+  Include usage:
+    Add this line inside your main MuJoCo scene root:
+      <include file="openarm_bimanual_aruco.xml"/>
+
+  Notes:
+    - This file adds one chest camera and two wrist cameras.
+    - If your base robot model already has wrist cameras, keep either set and
+      use consistent camera names in ROS.
+-->
+<mujoco model="openarm_bimanual_aruco_overlay">
+  <asset>
+    <material name="aruco_marker_mat"
+              texture="aruco_marker_id0_tex"
+              texuniform="true"
+              rgba="1 1 1 1"/>
+    <texture name="aruco_marker_id0_tex"
+             type="2d"
+             file="../../arm_commander/mujoco/aruco_4x4_50_id0.ppm"/>
+  </asset>
+
+  <worldbody>
+    <!-- Chest camera: fixed near torso, looking down at table -->
+    <camera name="chest_cam"
+            pos="0.30 0.00 1.20"
+            euler="0.0 0.785398 0.0"
+            fovy="60"
+            resolution="640 480"/>
+
+    <!--
+      Wrist cameras already exist in openarm_bimanual.xml as:
+        - camera_wrist_right
+        - camera_wrist_left
+      The ROS camera bridge remaps those feeds to:
+        - /right_wrist_cam/*
+        - /left_wrist_cam/*
+    -->
+
+    <!-- Marker plate on cube top using existing cube location -->
+    <body name="aruco_marker_plate" pos="0.235 -0.31 0.2705">
+      <geom name="aruco_marker_geom"
+            type="box"
+            size="0.025 0.025 0.0005"
+            material="aruco_marker_mat"
+            contype="0"
+            conaffinity="0"/>
+    </body>
+  </worldbody>
+</mujoco>
