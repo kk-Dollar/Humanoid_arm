@@ -27,6 +27,18 @@ public:
   void closeGripper();
   void closeGripper(const std::string &arm_name);
 
+  // Sets gripper to a specific gap width in meters.
+  // Solves the "closes completely" problem — gripper stops at cube width.
+  // gap_meters: desired distance between finger tips in meters
+  //             0.0 = fully closed, ~0.063 = fully open (0.7 rad * scale)
+  // arm_name: "left" or "right"
+  void setGripperWidth(const std::string &arm_name, double gap_meters);
+
+  // Converts a gap in meters to a finger joint position in radians.
+  // Uses FINGER_LENGTH_SCALE constant defined in commander.cpp.
+  // Returns value clamped to [0.0, 0.7].
+  double gapToJointValue(double gap_meters);
+
   // ── Pose helpers ─────────────────────────────────────────────────────────
 
   // Build a Pose from position + Roll-Pitch-Yaw (radians).
@@ -56,6 +68,8 @@ public:
   void moveCartesianByZ(const std::string &arm_name, double delta_z);
   void moveCartesianByY(const std::string &arm_name, double delta_y);
   void moveCartesianByX(const std::string &arm_name, double delta_x);
+  void moveCartesianByAxis(
+    const std::string &arm_name, double dx, double dy, double dz);
 
 private:
   void planAndExecute(
@@ -73,10 +87,6 @@ private:
     getArm(const std::string &arm_name);
   std::shared_ptr<moveit::planning_interface::MoveGroupInterface>
     getGripper(const std::string &arm_name);
-
-  // Internal Cartesian helper — shifts one world axis by delta
-  void moveCartesianByAxis(
-    const std::string &arm_name, double dx, double dy, double dz);
 
   // ── Members ──────────────────────────────────────────────────────────────
   std::shared_ptr<rclcpp::Node> node_;

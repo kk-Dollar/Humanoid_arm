@@ -27,11 +27,12 @@ POSE_PUBLISH_RATE_HZ = 10.0
 DEBUG_PUBLISH_RATE_HZ = 5.0
 
 # Systematic calibration bias: camera-detected - ground-truth
-# Camera sees: [0.285, -0.159, 0.383]  Ground truth: [0.235, -0.100, 0.287]
-# We subtract these offsets to correct the bias.
-CALIB_OFFSET_X = 0.050
-CALIB_OFFSET_Y = -0.059
-CALIB_OFFSET_Z = 0.096
+# In the synchronized system with cube at pos="0.30 -0.1 0.287", raw detections are:
+# raw_pos = [0.324, -0.124, 0.336]. We subtract these calibrated offsets to achieve
+# high-precision pose estimation of the true cube center.
+CALIB_OFFSET_X = 0.024
+CALIB_OFFSET_Y = -0.024
+CALIB_OFFSET_Z = 0.049
 
 
 class KalmanFilter3D:
@@ -108,7 +109,7 @@ class ArucoDetectorNode(Node):
         self.last_pose_world: Optional[PoseStamped] = None
         self.last_debug_image: Optional[np.ndarray] = None
         self.last_debug_pub_time: Optional[Time] = None
-        self.kalman = KalmanFilter3D(process_noise=1e-5, measurement_noise=1e-1)
+        self.last_smoothed_pos: Optional[np.ndarray] = None
 
         # Subscription: camera frames flowing from chest camera into detector.
         self.image_sub = self.create_subscription(
@@ -173,14 +174,34 @@ class ArucoDetectorNode(Node):
             self.maybe_publish_debug_image(bgr, msg.header.frame_id)
             return
 
-        idx = int(marker_indices[0])
-        marker_corners = [corners[idx]]
-        rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-            marker_corners, self.marker_size_m, self.camera_matrix, self.dist_coeffs
-        )
+        best_rvec = None
+        best_tvec = None
+        best_corners = None
 
-        rvec = rvecs[0][0]
-        tvec = tvecs[0][0]
+        for index in marker_indices:
+            idx = int(index)
+            cand_corners = [corners[idx]]
+            rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
+                cand_corners, self.marker_size_m, self.camera_matrix, self.dist_coeffs
+            )
+            cand_rvec = rvecs[0][0]
+            cand_tvec = tvecs[0][0]
+
+            # Filter out spurious/phantom detections with physically impossible depth (< 0.1m)
+            if cand_tvec[2] >= 0.1:
+                best_rvec = cand_rvec
+                best_tvec = cand_tvec
+                best_corners = cand_corners
+                break
+
+        if best_tvec is None:
+            self.publish_detected(False)
+            self.maybe_publish_debug_image(bgr, msg.header.frame_id)
+            return
+
+        rvec = best_rvec
+        tvec = best_tvec
+        marker_corners = best_corners
 
         pose_world = self.transform_marker_to_world(msg.header.frame_id, rvec, tvec, msg.header.stamp)
         if pose_world is None:
@@ -245,8 +266,29 @@ class ArucoDetectorNode(Node):
         raw_pos = np.array([t_world_marker[0], t_world_marker[1], t_world_marker[2]])
         corrected_pos = raw_pos - np.array([CALIB_OFFSET_X, CALIB_OFFSET_Y, CALIB_OFFSET_Z])
 
-        # Apply Kalman smoothing
-        smoothed_pos = self.kalman.update(corrected_pos)
+        # Apply low-pass filter (Exponential Moving Average) to smooth noise without velocity glitches
+        now = self.get_clock().now()
+        dt_since_last_seen = None
+        if self.last_seen_time is not None:
+            dt_since_last_seen = (now - self.last_seen_time).nanoseconds / 1e9
+            if dt_since_last_seen > 1.5:
+                self.last_smoothed_pos = None
+
+        print(f"[DEBUG] camera_frame={camera_frame}")
+        print(f"[DEBUG] tvec={tvec.tolist()} | rvec={rvec.tolist()}")
+        print(f"[DEBUG] tf_world_cam: trans={t_world_cam.tolist()} | rot={q_world_cam.tolist()}")
+        print(f"[DEBUG] raw_pos={raw_pos.tolist()}")
+        print(f"[DEBUG] corrected_pos={corrected_pos.tolist()}")
+        print(f"[DEBUG] last_seen_time={self.last_seen_time.nanoseconds if self.last_seen_time is not None else None} | now={now.nanoseconds} | dt={dt_since_last_seen}")
+        print(f"[DEBUG] last_smoothed_pos (before)={self.last_smoothed_pos.tolist() if self.last_smoothed_pos is not None else None}")
+
+        if self.last_smoothed_pos is None:
+            self.last_smoothed_pos = corrected_pos.copy()
+        else:
+            alpha = 0.2
+            self.last_smoothed_pos = alpha * corrected_pos + (1.0 - alpha) * self.last_smoothed_pos
+        smoothed_pos = self.last_smoothed_pos
+        print(f"[DEBUG] last_smoothed_pos (after)={self.last_smoothed_pos.tolist()}")
 
         pose.pose.position.x = float(smoothed_pos[0])
         pose.pose.position.y = float(smoothed_pos[1])

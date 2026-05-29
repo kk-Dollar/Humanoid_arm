@@ -1,0 +1,88 @@
+<mujoco model="openarm_v20_pedestal_pose1_cube">
+  <compiler meshdir="assets" angle="radian" />
+
+  <default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2" />
+    </default>
+    <default class="collision">
+      <geom condim="3" conaffinity="1" priority="1" group="3" solref="0.005 1" friction="1 0.01 0.01" />
+    </default>
+  </default>
+
+  <statistic center="1.3 0 0.6" extent="3.5" meansize="0.05" />
+  <option timestep="0.001" />
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="0" elevation="0" />
+    <quality shadowsize="8192" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+    <material name="openarm_body_link0_material" rgba="0.247 0.247 0.247 1.0" reflectance="0.05" shininess="0.5" />
+
+    <mesh name="body_link0" content_type="model/stl" file="visual/body/body_link0.stl" scale="0.001 0.001 0.001" />
+    <mesh name="body_link0_symp" content_type="model/stl" file="collision/body_link0_symp.stl" scale="0.001 0.001 0.001" />
+
+    <model name="bimanual" file="openarm_bimanual.xml" />
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true" />
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
+
+    
+    <geom name="openarm_body_link0_visual" type="mesh" mesh="body_link0" class="visual" material="openarm_body_link0_material" />
+    <geom name="openarm_body_link0_collision" type="mesh" mesh="body_link0_symp" class="collision" />
+
+    
+    
+    <geom name="chest_camera_mount_geom" pos="0.05 0.00 0.63" type="box" size="0.02 0.04 0.02" rgba="0.2 0.2 0.2 1.0" contype="0" conaffinity="0" />
+    <camera name="chest_cam" pos="0.05 0.00 0.63" fovy="60" xyaxes="-0.7654 -0.6436 0.0000 0.4933 -0.5866 0.6423" />
+
+    
+    <frame pos="0 0 0.698">
+      <attach model="bimanual" prefix="" />
+    </frame>
+
+    
+    <body name="pose1_pick_table" pos="0.35 0.05 0.236">
+      <geom name="pose1_pick_table_geom" type="box" size="0.28 0.55 0.02" rgba="0.55 0.45 0.35 1.0" contype="1" conaffinity="1" friction="2.5 0.02 0.02" solref="0.002 1" solimp="0.95 0.99 0.001" />
+    </body>
+
+    
+    <body name="test_cube_pose1" pos="0.30 -0.1 0.287">
+      <freejoint name="test_cube_free" />
+      <inertial pos="0 0 0" mass="0.05" diaginertia="8e-6 8e-6 8e-6" />
+      <geom name="test_cube_geom" type="box" size="0.035 0.035 0.03" rgba="1.0 0.45 0.05 1.0" contype="1" conaffinity="1" friction="5.0 0.05 0.05" solref="0.002 1" solimp="0.95 0.99 0.001" />
+      
+      <geom name="test_cube_aruco_margin" pos="0 0 0.0303" type="box" size="0.03 0.03 0.0002" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      
+      <geom name="test_cube_aruco_base" pos="0 0 0.0306" type="box" size="0.025 0.025 0.0005" rgba="0 0 0 1" contype="0" conaffinity="0" />
+
+      
+      <geom name="aruco_w_1_1" type="box" pos="0.0125 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_1_3" type="box" pos="-0.004167 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_1_4" type="box" pos="-0.0125 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+
+      <geom name="aruco_w_2_2" type="box" pos="0.004167 0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_2_4" type="box" pos="-0.0125 0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+
+      <geom name="aruco_w_3_3" type="box" pos="-0.004167 -0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_3_4" type="box" pos="-0.0125 -0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+
+      <geom name="aruco_w_4_3" type="box" pos="-0.004167 -0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+    </body>
+  </worldbody>
+
+  <keyframe>
+    
+    <key name="hands_up" qpos="0.0 0.0 0.0 1.5 0.0 0.0 0.0 0.0 0.0             0.0 0.0 0.0 1.5 0.0 0.0 0.0 0.0 0.0             0.30 -0.1 0.287 1.0 0.0 0.0 0.0" />
+    <key name="home" qpos="0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0             0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0             0.30 -0.1 0.287 1.0 0.0 0.0 0.0" />
+  </keyframe>
+</mujoco>

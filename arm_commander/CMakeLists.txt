@@ -19,6 +19,7 @@ find_package(image_transport REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 include_directories(include)
 
@@ -47,15 +48,20 @@ ament_target_dependencies(pick_and_place
   geometry_msgs
   std_msgs)
 
-add_executable(aruco_pick_and_place src/aruco_pick_and_place.cpp)
-target_link_libraries(aruco_pick_and_place commander_lib)
-target_include_directories(aruco_pick_and_place PRIVATE
+# NOTE: aruco_pick_and_place.cpp does not exist in this workspace;
+# the new wrist_servo_pick_and_place supersedes it.
+
+add_executable(wrist_servo_pick_and_place
+  src/wrist_servo_pick_and_place.cpp)
+target_link_libraries(wrist_servo_pick_and_place commander_lib)
+target_include_directories(wrist_servo_pick_and_place PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include)
-ament_target_dependencies(aruco_pick_and_place
+ament_target_dependencies(wrist_servo_pick_and_place
   rclcpp
   moveit_ros_planning_interface
   geometry_msgs
   std_msgs
+  std_srvs
   sensor_msgs
   tf2_ros
   tf2_geometry_msgs
@@ -65,13 +71,16 @@ ament_target_dependencies(aruco_pick_and_place
 install(TARGETS
   commander_lib
   pick_and_place
-  aruco_pick_and_place
+  wrist_servo_pick_and_place
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS
   scripts/aruco_detector.py
   scripts/camera_publisher.py
   scripts/aruco_pose_visualizer.py
+  scripts/wrist_servo_base.py
+  scripts/right_wrist_servo.py
+  scripts/left_wrist_servo.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

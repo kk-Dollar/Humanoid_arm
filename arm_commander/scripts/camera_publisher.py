@@ -14,7 +14,7 @@ import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
 
 
@@ -59,8 +59,6 @@ class MujocoCameraPublisher(Node):
         }
 
         self.cam_source_name: Dict[str, str] = {}
-
-        self.renderers: Dict[str, mujoco.Renderer] = {}
         for ros_cam_name, (candidates, w, h) in self.camera_cfg.items():
             source_name = ""
             for candidate in candidates:
@@ -75,7 +73,10 @@ class MujocoCameraPublisher(Node):
                 )
                 continue
             self.cam_source_name[ros_cam_name] = source_name
-            self.renderers[ros_cam_name] = mujoco.Renderer(self.model, height=h, width=w)
+
+        # Single shared renderer for all cameras to prevent OpenGL context collision and view bleeding.
+        # Initialize at chest camera's max resolution (640x480)
+        self.renderer = mujoco.Renderer(self.model, height=chest_h, width=chest_w)
 
         # Publication: camera image data flowing to perception nodes.
         self.img_pubs = {
@@ -93,8 +94,34 @@ class MujocoCameraPublisher(Node):
         self.tf_static_pub = StaticTransformBroadcaster(self)
         self.publish_camera_static_transforms()
 
+        # Subscription to joint states to synchronize the offscreen renderer
+        self.joint_state_sub = self.create_subscription(
+            JointState, "/joint_states", self.joint_state_callback, 10
+        )
+
         self.timer = self.create_timer(1.0 / max(self.publish_rate_hz, 1e-3), self.publish_tick)
         self.get_logger().info("mujoco_camera_publisher started")
+
+    def joint_state_callback(self, msg: JointState) -> None:
+        """
+        WHAT: Updates offscreen simulation joints using the incoming /joint_states.
+        WHY: Keeps the offscreen camera renderer synchronized with the active robot.
+        INPUT: JointState message.
+        OUTPUT: Updated self.data.qpos.
+        """
+        for name, position in zip(msg.name, msg.position):
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            if joint_id >= 0:
+                qpos_addr = self.model.jnt_qposadr[joint_id]
+                self.data.qpos[qpos_addr] = position
+
+                # Sync mirror gripper joint if updating finger_joint1
+                if "finger_joint1" in name:
+                    mirror_name = name.replace("finger_joint1", "finger_joint2")
+                    mirror_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, mirror_name)
+                    if mirror_id >= 0:
+                        mirror_addr = self.model.jnt_qposadr[mirror_id]
+                        self.data.qpos[mirror_addr] = position
 
     def build_camera_info(self, ros_cam_name: str, width: int, height: int) -> CameraInfo:
         """
@@ -167,14 +194,20 @@ class MujocoCameraPublisher(Node):
         mujoco.mj_forward(self.model, self.data)
         stamp = self.get_clock().now().to_msg()
 
-        for ros_cam_name, renderer in self.renderers.items():
+        for ros_cam_name in self.camera_cfg:
+            if ros_cam_name not in self.cam_source_name:
+                continue
             _, width, height = self.camera_cfg[ros_cam_name]
             source_name = self.cam_source_name[ros_cam_name]
 
-            renderer.update_scene(self.data, camera=source_name)
-            rgb = renderer.render()
+            self.renderer.update_scene(self.data, camera=source_name)
+            rgb = self.renderer.render()
             rgb = np.flipud(rgb)
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+            # Downsample if target dimension is smaller than the 640x480 renderer buffer (e.g. wrist cams 320x240)
+            if width != 640 or height != 480:
+                bgr = cv2.resize(bgr, (width, height), interpolation=cv2.INTER_AREA)
 
             img_msg = self.bridge.cv2_to_imgmsg(bgr, encoding="bgr8")
             img_msg.header.stamp = stamp

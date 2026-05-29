@@ -16,6 +16,21 @@ using FloatArrayMsg      = example_interfaces::msg::Float64MultiArray;
 using StringMsg          = std_msgs::msg::String;
 using PoseMsg            = geometry_msgs::msg::Pose;
 
+// ──────────────────────────────────────────────────────────────────────────────────
+// Gripper geometry constant
+//
+// Maps finger_joint1 radians to finger-tip gap in meters.
+//   gap_meters = joint_radians * FINGER_LENGTH_SCALE
+//   Joint range: 0.0 (closed) to 0.7 rad (fully open)
+//   0.7 rad * 0.09 = 0.063 m = ~6.3 cm full-open gap
+//
+// TUNE THIS after testing:
+//   - Too large: setGripperWidth opens less than expected (under-grip)
+//   - Too small: setGripperWidth opens more than expected (over-grip)
+//   Measure actual gap at joint=0.7 in MuJoCo or on real robot.
+// ──────────────────────────────────────────────────────────────────────────────────
+static constexpr double FINGER_LENGTH_SCALE = 0.09;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,6 +133,62 @@ void Commander::closeGripper(const std::string &arm_name)
   gripper->setStartStateToCurrentState();
   gripper->setNamedTarget("close_gripper");
   planAndExecute(gripper);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────
+// Precise gripper width control
+// ──────────────────────────────────────────────────────────────────────────────────
+
+// WHAT: Converts a desired finger-tip gap (meters) to a joint angle (radians).
+// WHY:  MoveIt operates in joint space; vision gives us a physical measurement.
+// INPUT:
+//   gap_meters — desired distance between finger tips in meters
+//               0.0 = fully closed, 0.063 = approximately fully open
+// OUTPUT: Joint value in radians, clamped to the valid range [0.0, 0.7].
+double Commander::gapToJointValue(double gap_meters)
+{
+  double joint_val = gap_meters / FINGER_LENGTH_SCALE;
+  // Clamp to valid joint range defined by URDF limits
+  joint_val = std::max(0.0, std::min(0.7, joint_val));
+  return joint_val;
+}
+
+// WHAT: Moves the specified gripper to a precise physical gap in meters.
+// WHY:  closeGripper() moves to 0.0 (fully closed), which crushes or pushes
+//       objects.  This method lets the caller set an exact opening that wraps
+//       snugly around a cube of known width measured from the wrist camera.
+// INPUT:
+//   arm_name  — "left" or "right" (also accepts "left_arm" / "right_arm")
+//   gap_meters — desired finger-tip gap in meters; clamped to [0.0, 0.063]
+// OUTPUT: Motion command sent to gripper MoveGroup; logs result at INFO level.
+void Commander::setGripperWidth(const std::string &arm_name, double gap_meters)
+{
+  // Convert physical gap → joint radians using scale factor
+  double joint_val = gapToJointValue(gap_meters);
+
+  auto gripper = getGripper(arm_name);
+  if (!gripper) {
+    RCLCPP_ERROR(node_->get_logger(),
+      "Unknown gripper '%s' for setGripperWidth", arm_name.c_str());
+    last_command_succeeded_ = false;
+    return;
+  }
+
+  // Resolve the URDF joint name for this arm's finger
+  std::string joint_name;
+  if (arm_name == "right" || arm_name == "right_arm") {
+    joint_name = "openarm_right_finger_joint1";
+  } else {
+    joint_name = "openarm_left_finger_joint1";
+  }
+
+  gripper->setStartStateToCurrentState();
+  gripper->setJointValueTarget(joint_name, joint_val);
+  planAndExecute(gripper);
+
+  RCLCPP_INFO(node_->get_logger(),
+    "Gripper '%s' set to %.4f m gap (joint=%.3f rad)",
+    arm_name.c_str(), gap_meters, joint_val);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
