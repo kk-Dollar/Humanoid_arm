@@ -19,11 +19,11 @@ TUNING GUIDE
    Tune by watching the error_x / error_y readout on /right_wrist/debug_image.
    A good starting point: correction should be ≤ 5 mm per step.
 
-2. pixel_threshold (default 8.0 px)
-   Maximum pixel error considered "aligned".
-   - Too HIGH: gripper lands off-centre; accepts poor alignment.
-   - Too LOW:  alignment never converges due to camera noise; always times out.
-   At 320×240 resolution a threshold of 8 px ≈ 2.5 % of frame width.
+2. alignment_threshold_m (default 0.005 m)
+    Maximum XY alignment error (gripper-centre to cube-centre) in metres.
+    - Too HIGH: gripper lands off-centre; accepts poor alignment.
+    - Too LOW:  alignment may fail due to image/depth noise.
+    Default 0.005 m = 5 mm.
 
 3. FINGER_LENGTH_SCALE (in commander.cpp, default 0.09)
    Maps finger_joint1 radians → finger-tip gap metres.
@@ -45,6 +45,7 @@ TUNING GUIDE
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -52,13 +53,21 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 import rclpy
+import tf2_ros
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped, Pose
+from moveit_msgs.msg import CollisionObject, PlanningScene
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.time import Time
+from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
+from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool, Float64
 from std_srvs.srv import Trigger
+from tf2_ros import TransformException
 
 
 class WristServoBase(Node):
@@ -84,6 +93,11 @@ class WristServoBase(Node):
     # Used in the width-to-metres conversion: width_m = width_px * depth / fx
     FALLBACK_DEPTH_M = 0.20
 
+    # Cube physical dimensions (full dimensions in metres)
+    CUBE_SIZE_X = 0.07
+    CUBE_SIZE_Y = 0.07
+    CUBE_SIZE_Z = 0.06
+
     def __init__(
         self,
         node_name: str,
@@ -105,8 +119,8 @@ class WristServoBase(Node):
 
         # ── Declare parameters ───────────────────────────────────────────────
 
-        # Maximum pixel error to consider the arm "aligned" to the cube
-        self.declare_parameter("pixel_threshold", 8.0)
+        # Maximum XY error (metres) to consider the wrist aligned to cube centre
+        self.declare_parameter("alignment_threshold_m", 0.005)
         # Scales pixel error to metres: correction_m = error_px * servo_gain
         self.declare_parameter("servo_gain", 0.003)
         # Seconds before the /align service gives up and returns failure
@@ -123,8 +137,8 @@ class WristServoBase(Node):
         self.declare_parameter("cube_color_hsv_upper", [30, 255, 255])
 
         # Read parameter values into instance variables
-        self._pixel_threshold: float = float(
-            self.get_parameter("pixel_threshold").value)
+        self._alignment_threshold_m: float = float(
+            self.get_parameter("alignment_threshold_m").value)
         self._servo_gain: float = float(
             self.get_parameter("servo_gain").value)
         self._alignment_timeout: float = float(
@@ -148,11 +162,13 @@ class WristServoBase(Node):
         # Servoing loop control
         self.servoing_active: bool = False
         self.aligned: bool = False
+        self._aligned_event = threading.Event()  # Set by image_callback when aligned
 
         # Most recent detection results (written by image_callback)
         self.last_cube_width_m: float = 0.0
         self.last_error_x: float = 999.0
         self.last_error_y: float = 999.0
+        self.last_error_m: float = 999.0
         self.last_depth_m: float = self.FALLBACK_DEPTH_M
 
         # Latest image for debug publishing
@@ -165,19 +181,37 @@ class WristServoBase(Node):
         self._aruco_dict = aruco.Dictionary_get(self.ARUCO_DICT)
         self._aruco_params = aruco.DetectorParameters_create()
 
+        # TF2 listener for camera to world frame transform lookup
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self._image_frame_id: Optional[str] = None
+
         # Debug image publish rate limiter
         self._last_debug_pub_time: float = 0.0
         self._debug_publish_interval: float = 0.2  # 5 Hz
+
+        # ── Callback groups ──────────────────────────────────────────────────
+        # CRITICAL: image/camera_info callbacks must NOT share a group with
+        # align_callback, which blocks on threading.Event.wait(). With the
+        # default MutuallyExclusiveCallbackGroup a blocking service callback
+        # would starve image_callback, so _aligned_event would never fire.
+        #
+        # Solution: put subscriptions in one group and the service in another;
+        # MultiThreadedExecutor can then run them concurrently.
+        self._subscription_cbg = ReentrantCallbackGroup()   # concurrent image frames
+        self._service_cbg = MutuallyExclusiveCallbackGroup()  # blocking align srv
 
         # ── Subscribers ──────────────────────────────────────────────────────
 
         # Incoming: raw camera frames from wrist camera → detection pipeline
         self.create_subscription(
-            Image, image_topic, self.image_callback, 10)
+            Image, image_topic, self.image_callback, 10,
+            callback_group=self._subscription_cbg)
 
         # Incoming: camera intrinsics → width-to-metres conversion and ArUco
         self.create_subscription(
-            CameraInfo, camera_info_topic, self.camera_info_callback, 10)
+            CameraInfo, camera_info_topic, self.camera_info_callback, 10,
+            callback_group=self._subscription_cbg)
 
         # ── Publishers ───────────────────────────────────────────────────────
 
@@ -198,10 +232,17 @@ class WristServoBase(Node):
         self._debug_pub = self.create_publisher(
             Image, debug_topic, 10)
 
+        # Outgoing: refined cube pose detected by wrist camera.
+        self._wrist_cube_pose_pub = self.create_publisher(
+            PoseStamped, "/wrist_cube_pose", 10)
+
         # ── Service ──────────────────────────────────────────────────────────
 
         # /*/align : Trigger → blocks until aligned or timeout; returns cube width
-        self.create_service(Trigger, align_service_name, self.align_callback)
+        # Must be in its own callback group so image_callback keeps running.
+        self.create_service(
+            Trigger, align_service_name, self.align_callback,
+            callback_group=self._service_cbg)
 
         # ── Timer ────────────────────────────────────────────────────────────
 
@@ -231,6 +272,7 @@ class WristServoBase(Node):
         INPUT: Image message from /<cam>/image_raw.
         OUTPUT: Updates last_error_x/y, last_cube_width_m; publishes topics.
         """
+        self._image_frame_id = msg.header.frame_id
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as exc:  # pylint: disable=broad-except
@@ -250,6 +292,7 @@ class WristServoBase(Node):
             self.aligned = False
             self.last_error_x = 999.0
             self.last_error_y = 999.0
+            self.last_error_m = 999.0
             self._publish_aligned(False)
             if self.servoing_active:
                 self.get_logger().warn(
@@ -284,10 +327,23 @@ class WristServoBase(Node):
         self._width_pub.publish(width_msg)
 
         # ── Convergence check ─────────────────────────────────────────────
-        pixel_error = np.hypot(error_x, error_y)
-        is_aligned = pixel_error < self._pixel_threshold
+        # Convert pixel centroid error into metric XY error at current depth:
+        # error_m = error_px * depth / fx
+        error_m_x = (error_x * depth_m) / fx if fx > 0 else 999.0
+        error_m_y = (error_y * depth_m) / fx if fx > 0 else 999.0
+        metric_error = float(np.hypot(error_m_x, error_m_y))
+        self.last_error_m = metric_error
+        is_aligned = metric_error < self._alignment_threshold_m
         self.aligned = is_aligned
         self._publish_aligned(is_aligned)
+        if is_aligned:
+            self._aligned_event.set()  # Wake up align_callback waiting thread
+
+        # Publish the refined cube pose to /wrist_cube_pose when visual servoing is active
+        if self.servoing_active:
+            refined_pose = self._get_refined_pose_from_aruco(bgr, msg.header.stamp)
+            if refined_pose is not None:
+                self._wrist_cube_pose_pub.publish(refined_pose)
 
         self._maybe_publish_debug(
             bgr, cx_img, cy_img,
@@ -441,42 +497,42 @@ class WristServoBase(Node):
         OUTPUT: response.success = True if aligned within timeout.
                 response.message = "<cube_width_m as string>" on success
                 response.message = "Alignment timeout after Xs" on failure.
+
+        NOTE: We use threading.Event.wait() instead of time.sleep() so that
+              the MultiThreadedExecutor thread pool can keep running
+              image_callback concurrently to update self.aligned.
         """
         self.servoing_active = True
         self.aligned = False
-        start_time = self.get_clock().now()
+        self._aligned_event.clear()  # Reset before starting
 
-        self.get_logger().info("Align service called — starting servoing loop")
+        self.get_logger().info(
+            f"Align service called — starting servoing loop "
+            f"(timeout={self._alignment_timeout:.0f}s, "
+            f"threshold={self._alignment_threshold_m*1000:.1f}mm)")
 
-        while rclpy.ok():
-            elapsed = (self.get_clock().now() - start_time).nanoseconds / 1.0e9
+        # Wait for image_callback to set _aligned_event, or timeout.
+        # threading.Event.wait() releases the GIL so the executor thread pool
+        # can run image_callback in a separate thread without being blocked.
+        aligned = self._aligned_event.wait(timeout=self._alignment_timeout)
 
-            if elapsed > self._alignment_timeout:
-                self.get_logger().error(
-                    f"Wrist alignment TIMEOUT after {elapsed:.1f} s")
-                response.success = False
-                response.message = (
-                    f"Alignment timeout after {elapsed:.1f}s")
-                self.servoing_active = False
-                return response
-
-            if self.aligned:
-                self.get_logger().info(
-                    f"Wrist ALIGNED — cube width={self.last_cube_width_m:.4f} m "
-                    f"error=({self.last_error_x:.1f}, {self.last_error_y:.1f}) px")
-                response.success = True
-                # message field carries cube_width_m for the C++ caller to parse
-                response.message = f"{self.last_cube_width_m:.6f}"
-                self.servoing_active = False
-                return response
-
-            # Poll at 20 Hz; image_callback runs asynchronously via executor
-            time.sleep(0.05)
-
-        # rclpy not ok — shut down gracefully
-        response.success = False
-        response.message = "Node shutdown during alignment"
         self.servoing_active = False
+
+        if aligned and rclpy.ok():
+            self.get_logger().info(
+                f"Wrist ALIGNED — cube width={self.last_cube_width_m:.4f} m "
+                f"error=({self.last_error_x:.1f}, {self.last_error_y:.1f}) px "
+                f"| {self.last_error_m*1000.0:.2f} mm")
+            response.success = True
+            # message field carries cube_width_m for the C++ caller to parse
+            response.message = f"{self.last_cube_width_m:.6f}"
+        else:
+            self.get_logger().error(
+                f"Wrist alignment TIMEOUT after {self._alignment_timeout:.1f}s "
+                f"— last error={self.last_error_m*1000:.1f} mm")
+            response.success = False
+            response.message = f"Alignment timeout after {self._alignment_timeout:.1f}s"
+
         return response
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -571,6 +627,87 @@ class WristServoBase(Node):
             self._debug_pub.publish(msg)
         except Exception as exc:  # pylint: disable=broad-except
             self.get_logger().warn(f"Debug image publish failed: {exc}")
+
+    def _get_refined_pose_from_aruco(self, bgr: np.ndarray, stamp) -> Optional[PoseStamped]:
+        """
+        WHAT: Detects ArUco marker and transforms its pose into world frame using TF2.
+        """
+        if not self.camera_calibrated or self.camera_matrix is None or self.dist_coeffs is None:
+            return None
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        corners, ids, _ = aruco.detectMarkers(
+            gray, self._aruco_dict, parameters=self._aruco_params)
+
+        if ids is None:
+            return None
+
+        indices = np.where(ids.flatten() == self._marker_id)[0]
+        if indices.size == 0:
+            return None
+
+        idx = int(indices[0])
+
+        try:
+            rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
+                [corners[idx]], self._marker_size_m,
+                self.camera_matrix, self.dist_coeffs)
+            rvec = rvecs[0][0]
+            tvec = tvecs[0][0]
+        except Exception as exc:
+            self.get_logger().warn(f"Marker pose estimation failed: {exc}")
+            return None
+
+        camera_frame = self._image_frame_id
+        if camera_frame is None:
+            return None
+
+        try:
+            tf_world_cam = self._tf_buffer.lookup_transform(
+                "world", camera_frame, Time(), timeout=Duration(seconds=0.2)
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"TF lookup failed world->{camera_frame}: {exc}", throttle_duration_sec=2.0)
+            return None
+
+        t_world_cam = np.array([
+            tf_world_cam.transform.translation.x,
+            tf_world_cam.transform.translation.y,
+            tf_world_cam.transform.translation.z
+        ], dtype=np.float64)
+        q_world_cam = np.array([
+            tf_world_cam.transform.rotation.x,
+            tf_world_cam.transform.rotation.y,
+            tf_world_cam.transform.rotation.z,
+            tf_world_cam.transform.rotation.w
+        ], dtype=np.float64)
+
+        rot_world_cam = Rotation.from_quat(q_world_cam)
+
+        rot_cv_marker = Rotation.from_rotvec(rvec.reshape(3))
+        t_cv_marker = tvec.reshape(3)
+
+        cv_to_mujoco = Rotation.from_euler('x', 180, degrees=True)
+        t_cam_marker = cv_to_mujoco.apply(t_cv_marker)
+        rot_cam_marker = cv_to_mujoco * rot_cv_marker
+
+        rot_world_marker = rot_world_cam * rot_cam_marker
+        t_world_marker = t_world_cam + rot_world_cam.apply(t_cam_marker)
+
+        pose = PoseStamped()
+        pose.header.frame_id = "world"
+        pose.header.stamp = stamp
+        pose.pose.position.x = float(t_world_marker[0])
+        pose.pose.position.y = float(t_world_marker[1])
+        pose.pose.position.z = float(t_world_marker[2])
+        q = rot_world_marker.as_quat()
+        pose.pose.orientation.x = float(q[0])
+        pose.pose.orientation.y = float(q[1])
+        pose.pose.orientation.z = float(q[2])
+        pose.pose.orientation.w = float(q[3])
+        return pose
+
+
 
 
 # ── Concrete subclasses ───────────────────────────────────────────────────────

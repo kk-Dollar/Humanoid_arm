@@ -49,22 +49,23 @@
 
 using namespace std::chrono_literals;
 
-// ── Downward grasp geometry (from pick_and_place.cpp) ───────────────────────
-static constexpr double POSE1_QX = -0.007;
-static constexpr double POSE1_QY = -0.104;
-static constexpr double POSE1_QZ = 0.002;
-static constexpr double POSE1_QW = 0.995;
+// ── Downward-facing grasp orientation ─────────────────────────────────────────
+// This orientation has the gripper pointing straight down at the table/marker
+static constexpr double HANDS_UP_QX  = -0.007;
+static constexpr double HANDS_UP_QY  = -0.104;
+static constexpr double HANDS_UP_QZ  = 0.002;
+static constexpr double HANDS_UP_QW  = 0.995;
 
-static constexpr double GRASP_OFFSET_X = 0.01;
-static constexpr double GRASP_OFFSET_Y = 0.015;
-static constexpr double GRASP_OFFSET_Z = 0.148;
+static constexpr double GRASP_OFFSET_X = -0.02;
+static constexpr double GRASP_OFFSET_Y = 0.0;
+static constexpr double GRASP_OFFSET_Z = 0.006;
 
-/// Phase-2 camera standoff: shift in +X so wrist camera can see cube face.
-static constexpr double WRIST_CAM_LOOK_X_OFFSET = 0.02;  // metres
+/// Phase-2 camera standoff in X (kept at 0 for straight above-cube pre-grasp).
+static constexpr double WRIST_CAM_LOOK_X_OFFSET = 0.0;  // metres
 
-/// Height of EE above grasp position when entering Phase 2 (wrist-cam look pose).
-/// Keep this at 0 so pre-align pose uses X standoff instead of extra Z hover.
-static constexpr double WRIST_CAM_HOVER_HEIGHT  = 0.0;   // metres above grasp offset Z
+/// Height of EE above grasp position when entering Phase 2 (pre-grasp pose).
+/// Requirement: move to 15 cm above cube before wrist alignment.
+static constexpr double WRIST_CAM_HOVER_HEIGHT  = 0.2;  // metres above grasp offset Z
 
 /// After visual servo aligns XY, the arm descends this far to get close enough
 /// for the gripper to close on the cube.
@@ -424,38 +425,35 @@ int main(int argc, char ** argv)
 
   // ── Phase 2: Right arm → wrist-cam look position above cube ────────────────
   //
-  // Downward grasp approach strategy:
-  //   Move directly above estimated cube pose using chest camera ArUco detection.
-  //   Use downward orientation (POSE1_Q*) so that gripper is pointing straight down
-  //   perpendicular to the table. The angled wrist camera then naturally sees the cube.
+  // Wrist-parallel-to-table approach:
+  //   Move to a pre-grasp pose directly above the cube with wrist level.
+  //   Pre-grasp Z is 15 cm above grasp height for safe collision-free planning.
   //
   RCLCPP_INFO(node->get_logger(),
-    "Phase 2: Moving right arm above cube for downward wrist-cam view");
+    "Phase 2: Moving right arm above cube for wrist-parallel view");
 
-  // EE look pose: apply +X standoff for camera visibility, keep same grasp Z.
+  // Pre-grasp pose: cube center + offsets + 15 cm hover.
   auto wrist_look_pose = commander.makePose(
     cube_pose.pose.position.x + GRASP_OFFSET_X + WRIST_CAM_LOOK_X_OFFSET,
     cube_pose.pose.position.y + GRASP_OFFSET_Y,
     cube_pose.pose.position.z + GRASP_OFFSET_Z + WRIST_CAM_HOVER_HEIGHT,
-    POSE1_QX, POSE1_QY, POSE1_QZ, POSE1_QW);
+    HANDS_UP_QX, HANDS_UP_QY, HANDS_UP_QZ, HANDS_UP_QW);
 
   RCLCPP_INFO(node->get_logger(),
-    "Phase 2: EE target → [x=%.3f, y=%.3f, z=%.3f]  (x-standoff=%.1f cm, z-hover=%.1f cm)",
+    "Phase 2: EE pre-grasp target → [x=%.3f, y=%.3f, z=%.3f]  (15 cm hover)",
     wrist_look_pose.position.x,
     wrist_look_pose.position.y,
-    wrist_look_pose.position.z,
-    WRIST_CAM_LOOK_X_OFFSET * 100.0,
-    WRIST_CAM_HOVER_HEIGHT * 100.0);
+    wrist_look_pose.position.z);
 
   commander.moveToPose(wrist_look_pose, "right");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner,
-      "Phase 2", "planning failed for wrist-cam hover pose above cube");
+      "Phase 2", "planning failed for 15 cm pre-grasp pose");
   }
-  stepDelay(node, "right arm hovering above cube — wrist cam looking down at cube");
+  stepDelay(node, "right arm at 15 cm pre-grasp hover — wrist parallel");
 
   RCLCPP_INFO(node->get_logger(),
-    "Phase 2 DONE — right arm above cube, wrist cam looking down");
+    "Phase 2 DONE — right arm at pre-grasp hover, wrist parallel");
 
   // ── Phase 3: Right wrist visual servoing ──────────────────────────────────
   RCLCPP_INFO(node->get_logger(),

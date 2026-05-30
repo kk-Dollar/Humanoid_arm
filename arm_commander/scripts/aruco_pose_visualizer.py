@@ -15,6 +15,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 MARKER_SIZE = 0.05
 AXIS_LEN = 0.1
 PUBLISH_RATE_HZ = 10.0
+CUBE_HEIGHT = 0.06
 
 
 class ArucoPoseVisualizer(Node):
@@ -85,6 +86,7 @@ class ArucoPoseVisualizer(Node):
         )
         if self.last_pose is not None:
             marker.pose = self.last_pose.pose
+            marker.pose.position.z -= CUBE_HEIGHT * 0.5
         else:
             marker.pose.orientation.w = 1.0
         self.marker_pub.publish(marker)
@@ -108,6 +110,7 @@ class ArucoPoseVisualizer(Node):
                 arrow.color = color
                 arrow.scale = Vector3(x=0.01, y=0.02, z=0.02)
                 arrow.pose = self.last_pose.pose
+                arrow.pose.position.z -= CUBE_HEIGHT * 0.5
                 arrow.points = [Point(x=0.0, y=0.0, z=0.0), Point(x=direction[0], y=direction[1], z=direction[2])]
                 axes.markers.append(arrow)
         self.axes_pub.publish(axes)

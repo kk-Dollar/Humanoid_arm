@@ -12,12 +12,14 @@ import numpy as np
 import rclpy
 import tf2_ros
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose
+from moveit_msgs.msg import CollisionObject, PlanningScene
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.time import Time
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image
+from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool
 from tf2_ros import TransformException
 
@@ -26,13 +28,18 @@ POSE_TIMEOUT_SEC = 1.0
 POSE_PUBLISH_RATE_HZ = 10.0
 DEBUG_PUBLISH_RATE_HZ = 5.0
 
+# Cube physical dimensions (from pedestal_pose1_cube.xml: size="0.035 0.035 0.03")
+# MuJoCo size is half-extents, so full dimensions are:
+CUBE_SIZE_X = 0.07  # metres
+CUBE_SIZE_Y = 0.07  # metres
+CUBE_SIZE_Z = 0.06  # metres
+
 # Systematic calibration bias: camera-detected - ground-truth
-# In the synchronized system with cube at pos="0.30 -0.1 0.287", raw detections are:
-# raw_pos = [0.324, -0.124, 0.336]. We subtract these calibrated offsets to achieve
-# high-precision pose estimation of the true cube center.
-CALIB_OFFSET_X = 0.024
-CALIB_OFFSET_Y = -0.024
-CALIB_OFFSET_Z = 0.049
+# Keep x/y as measured and only apply a depth correction.
+# Offsets = raw - truth; subtracting from raw applies the correction.
+CALIB_OFFSET_X = 0.058   # raw(0.338) - truth(0.280)
+CALIB_OFFSET_Y = -0.065  # raw(-0.165) - truth(-0.100)
+CALIB_OFFSET_Z = 0.092   # raw(0.328) - truth(0.236)
 
 
 class KalmanFilter3D:
@@ -126,6 +133,21 @@ class ArucoDetectorNode(Node):
         self.cube_detected_pub = self.create_publisher(Bool, "/cube_detected", 10)
         # Publication: debug visualization image for human inspection.
         self.debug_image_pub = self.create_publisher(Image, "/aruco_debug_image", 10)
+        # Publication: MoveIt collision object for planning scene.
+        self.collision_object_pub = self.create_publisher(
+            CollisionObject, "/collision_object", 10
+        )
+        # Publication: MoveIt planning scene diff (more explicit scene update path).
+        self.planning_scene_pub = self.create_publisher(
+            PlanningScene, "/planning_scene", 10
+        )
+
+        # Subscription: refined cube pose from wrist camera(s)
+        self.wrist_cube_pose_sub = self.create_subscription(
+            PoseStamped, "/wrist_cube_pose", self.wrist_cube_pose_callback, 10
+        )
+        self.last_wrist_pose: Optional[PoseStamped] = None
+        self.last_wrist_seen_time: Optional[Time] = None
 
         self.pose_timer = self.create_timer(1.0 / POSE_PUBLISH_RATE_HZ, self.pose_timer_cb)
 
@@ -324,6 +346,60 @@ class ArucoDetectorNode(Node):
         msg.data = detected
         self.cube_detected_pub.publish(msg)
 
+    def publish_collision_object(self, pose: PoseStamped) -> None:
+        """
+        WHAT: Publishes the detected cube as a MoveIt collision object.
+        WHY: Allows MoveIt to plan collision-free paths around the cube.
+        INPUT: World-frame cube pose from detection.
+        OUTPUT: CollisionObject publication for planning scene.
+        """
+        collision_obj = CollisionObject()
+        collision_obj.header.frame_id = "world"
+        collision_obj.header.stamp = pose.header.stamp
+        collision_obj.id = "detected_cube"
+        collision_obj.operation = CollisionObject.ADD
+        
+        # Create box shape with cube dimensions
+        shape = SolidPrimitive()
+        shape.type = SolidPrimitive.BOX
+        shape.dimensions = [CUBE_SIZE_X, CUBE_SIZE_Y, CUBE_SIZE_Z]
+        
+        # Use detected position but apply identity orientation (cube sits level on table).
+        # The detected marker lives on the cube's top face, so shift the collision
+        # object down by half the cube height to place the box at the cube center.
+        cube_pose = Pose()
+        cube_pose.position.x = pose.pose.position.x
+        cube_pose.position.y = pose.pose.position.y
+        cube_pose.position.z = pose.pose.position.z - (CUBE_SIZE_Z * 0.5)
+        cube_pose.orientation.x = 0.0
+        cube_pose.orientation.y = 0.0
+        cube_pose.orientation.z = 0.0
+        cube_pose.orientation.w = 1.0  # Identity quaternion
+        
+        collision_obj.primitives.append(shape)
+        collision_obj.primitive_poses.append(cube_pose)
+        
+        # Publish via collision_object topic.
+        self.collision_object_pub.publish(collision_obj)
+
+        # Publish as planning scene diff so MoveIt applies the object immediately.
+        scene = PlanningScene()
+        scene.is_diff = True
+        scene.world.collision_objects.append(collision_obj)
+        self.planning_scene_pub.publish(scene)
+
+        self.get_logger().info(
+            f"Published collision object at ({cube_pose.position.x:.3f}, "
+            f"{cube_pose.position.y:.3f}, {cube_pose.position.z:.3f})"
+        )
+
+    def wrist_cube_pose_callback(self, msg: PoseStamped) -> None:
+        """
+        WHAT: Stores the refined cube pose from the wrist camera.
+        """
+        self.last_wrist_pose = msg
+        self.last_wrist_seen_time = self.get_clock().now()
+
     def pose_timer_cb(self) -> None:
         """
         WHAT: Periodically publishes last valid cube pose at 10 Hz.
@@ -332,11 +408,25 @@ class ArucoDetectorNode(Node):
         OUTPUT: /cube_pose publication while marker seen in recent window.
         """
         now = self.get_clock().now()
+
+        # Prioritize wrist camera pose if it was seen recently (within last 1.5 seconds)
+        if (self.last_wrist_pose is not None
+                and self.last_wrist_seen_time is not None
+                and (now - self.last_wrist_seen_time).nanoseconds < int(1.5 * 1e9)):
+            self.last_pose_world = self.last_wrist_pose
+            self.last_seen_time = now
+            self.cube_pose_pub.publish(self.last_pose_world)
+            self.publish_collision_object(self.last_pose_world)
+            self.publish_detected(True)
+            return
+
         if self.last_pose_world is None or self.last_seen_time is None:
             return
         if (now - self.last_seen_time).nanoseconds > int(POSE_TIMEOUT_SEC * 1e9):
             return
         self.cube_pose_pub.publish(self.last_pose_world)
+        # Also publish as MoveIt collision object for planning scene
+        self.publish_collision_object(self.last_pose_world)
 
     def maybe_publish_debug_image(self, bgr: np.ndarray, frame_id: str) -> None:
         """
