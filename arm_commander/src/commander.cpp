@@ -342,6 +342,44 @@ void Commander::moveCartesianByX(const std::string &arm_name, double delta_x)
   moveCartesianByAxis(arm_name, delta_x, 0.0, 0.0);
 }
 
+void Commander::moveCartesianToPose(const geometry_msgs::msg::Pose &target_pose, const std::string &arm_name)
+{
+  auto arm = getArm(arm_name);
+  if (!arm) {
+    RCLCPP_ERROR(node_->get_logger(),
+      "Unknown arm '%s' for Cartesian move", arm_name.c_str());
+    last_command_succeeded_ = false;
+    return;
+  }
+
+  std::vector<PoseMsg> waypoints = { target_pose };
+
+  moveit_msgs::msg::RobotTrajectory trajectory;
+  const double fraction =
+    arm->computeCartesianPath(waypoints, 0.01, 0.0, trajectory);
+
+  if (fraction < 0.95) {
+    RCLCPP_WARN(node_->get_logger(),
+      "Cartesian path for '%s' only %.1f%% achieved — aborting",
+      arm_name.c_str(), fraction * 100.0);
+    last_command_succeeded_ = false;
+    return;
+  }
+
+  MoveGroupInterface::Plan plan;
+  plan.trajectory_ = trajectory;
+  bool success =
+    (arm->execute(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+  if (!success) {
+    RCLCPP_ERROR(node_->get_logger(),
+      "Execution failed for Cartesian path on group '%s'.", arm_name.c_str());
+    last_command_succeeded_ = false;
+    return;
+  }
+
+  last_command_succeeded_ = true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Planning + execution
 // ─────────────────────────────────────────────────────────────────────────────
@@ -472,4 +510,52 @@ Commander::getGripper(const std::string &arm_name)
   if (arm_name == "right" || arm_name == "right_arm") return gripper_right;
   if (arm_name == "left"  || arm_name == "left_arm")  return gripper_left;
   return nullptr;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Collision object attach / detach
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Commander::attachCubeToGripper(
+  const std::string & object_id,
+  const std::string & arm_name)
+{
+  std::string ee_link;
+  if (arm_name == "right" || arm_name == "right_arm") {
+    ee_link = "openarm_right_ee_base_link";
+  } else {
+    ee_link = "openarm_left_ee_base_link";
+  }
+
+  auto arm = getArm(arm_name);
+  if (!arm) {
+    RCLCPP_WARN(node_->get_logger(),
+      "attachCubeToGripper: unknown arm '%s'", arm_name.c_str());
+    return;
+  }
+
+  // attachObject removes the object from the collision world and attaches it
+  // to ee_link — MoveIt no longer avoids it as an obstacle during planning.
+  arm->attachObject(object_id, ee_link);
+  RCLCPP_INFO(node_->get_logger(),
+    "Attached '%s' to '%s' — cube is part of robot model",
+    object_id.c_str(), ee_link.c_str());
+}
+
+void Commander::detachCubeFromGripper(
+  const std::string & object_id,
+  const std::string & arm_name)
+{
+  auto arm = getArm(arm_name);
+  if (!arm) {
+    RCLCPP_WARN(node_->get_logger(),
+      "detachCubeFromGripper: unknown arm '%s'", arm_name.c_str());
+    return;
+  }
+
+  // detachObject removes the object from the robot model and returns it
+  // to the world collision space at its current tf pose.
+  arm->detachObject(object_id);
+  RCLCPP_INFO(node_->get_logger(),
+    "Detached '%s' from arm '%s' — cube returned to world",
+    object_id.c_str(), arm_name.c_str());
 }

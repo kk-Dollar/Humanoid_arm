@@ -42,10 +42,10 @@ limitations under the License.
     </group>
 
     <group_state name="close_gripper" group="left_gripper">
-        <joint name="openarm_left_finger_joint1" value="0"/>
+        <joint name="openarm_left_finger_joint1" value="0.0"/>
     </group_state>
     <group_state name="close_gripper" group="right_gripper">
-        <joint name="openarm_right_finger_joint1" value="0"/>
+        <joint name="openarm_right_finger_joint1" value="0.0"/>
     </group_state>
     <group_state name="open_gripper" group="left_gripper">
         <joint name="openarm_left_finger_joint1" value="0.7"/>
@@ -120,5 +120,16 @@ limitations under the License.
     <disable_collisions link1="openarm_right_ee_base_link" link2="openarm_right_ee_link2" reason="Adjacent"/>
     <disable_collisions link1="openarm_left_ee_link1" link2="openarm_left_ee_link2" reason="Adjacent"/>
     <disable_collisions link1="openarm_right_ee_link1" link2="openarm_right_ee_link2" reason="Adjacent"/>
+
+    <!-- Disable bimanual end-effector self-collisions during handover -->
+    <disable_collisions link1="openarm_left_ee_base_link" link2="openarm_right_ee_base_link" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_base_link" link2="openarm_right_ee_link1" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_base_link" link2="openarm_right_ee_link2" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link1" link2="openarm_right_ee_base_link" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link1" link2="openarm_right_ee_link1" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link1" link2="openarm_right_ee_link2" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link2" link2="openarm_right_ee_base_link" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link2" link2="openarm_right_ee_link1" reason="Never"/>
+    <disable_collisions link1="openarm_left_ee_link2" link2="openarm_right_ee_link2" reason="Never"/>
 
 </robot>

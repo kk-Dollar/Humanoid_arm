@@ -6,7 +6,7 @@
       <geom contype="0" conaffinity="0" group="2" />
     </default>
     <default class="collision">
-      <geom condim="3" conaffinity="1" priority="1" group="3" solref="0.005 1" friction="1 0.01 0.01" />
+      <geom condim="4" contype="1" conaffinity="1" priority="1" group="3" solref="0.005 1" friction="3.0 0.5 0.1" />
     </default>
   </default>
 
@@ -56,27 +56,26 @@
     </body>
 
     
-    <body name="test_cube_pose1" pos="0.28 -0.1 0.25">
+    <body name="test_cube_pose1" pos="0.15 -0.1 0.25">
       <freejoint name="test_cube_free" />
       <inertial pos="0 0 0" mass="0.05" diaginertia="8e-6 8e-6 8e-6" />
-      <geom name="test_cube_geom" type="box" size="0.035 0.035 0.03" rgba="1.0 0.45 0.05 1.0" contype="1" conaffinity="1" friction="5.0 0.05 0.05" solref="0.002 1" solimp="0.95 0.99 0.001" />
+      <geom name="test_cube_geom" type="box" size="0.035 0.035 0.03" rgba="1.0 0.45 0.05 1.0" contype="1" conaffinity="1" condim="4" friction="5.0 0.5 0.1" solref="0.002 1" solimp="0.95 0.99 0.001" />
       
-      <geom name="test_cube_aruco_margin" pos="0 0 0.0303" type="box" size="0.03 0.03 0.0002" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      
-      <geom name="test_cube_aruco_base" pos="0 0 0.0306" type="box" size="0.025 0.025 0.0005" rgba="0 0 0 1" contype="0" conaffinity="0" />
+      <geom name="test_cube_aruco_margin" pos="0 0 0.0305" type="box" size="0.03 0.03 0.0005" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="test_cube_aruco_base" pos="0 0 0.0315" type="box" size="0.025 0.025 0.0005" rgba="0 0 0 1" contype="0" conaffinity="0" />
 
       
-      <geom name="aruco_w_1_1" type="box" pos="0.0125 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_1_3" type="box" pos="-0.004167 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_1_4" type="box" pos="-0.0125 0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_1_1" type="box" pos="0.0125 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_1_3" type="box" pos="-0.004167 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_1_4" type="box" pos="-0.0125 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
 
-      <geom name="aruco_w_2_2" type="box" pos="0.004167 0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_2_4" type="box" pos="-0.0125 0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_2_2" type="box" pos="0.004167 0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_2_4" type="box" pos="-0.0125 0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
 
-      <geom name="aruco_w_3_3" type="box" pos="-0.004167 -0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_3_4" type="box" pos="-0.0125 -0.004167 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_3_3" type="box" pos="-0.004167 -0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_3_4" type="box" pos="-0.0125 -0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
 
-      <geom name="aruco_w_4_3" type="box" pos="-0.004167 -0.0125 0.0312" size="0.004166 0.004166 0.0003" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="aruco_w_4_3" type="box" pos="-0.004167 -0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
     </body>
   </worldbody>
 

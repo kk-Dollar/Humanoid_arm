@@ -18,53 +18,50 @@ limitations under the License.
 <mujoco model="openarm_v20">
   <default>
     <joint stiffness="0" ref="0.0" />
-    <default class="robot">
-      <default class="motor_DM8009">
-        <joint frictionloss="0.2" damping="1.0" armature="0.0081" limited="true" type="hinge" />
-        <motor forcelimited="true" forcerange="-40 40" />
-      </default>
-      <default class="motor_DM4340">
-        <joint frictionloss="0.1" damping="0.9" armature="0.1600" limited="true" type="hinge" />
-        <motor forcelimited="true" forcerange="-27 27" />
-      </default>
-      <default class="motor_DM4310">
-        <joint frictionloss="0.04" damping="0.9" armature="0.0100" limited="true" type="hinge" />
-        <motor forcelimited="true" forcerange="-7 7" />
-      </default>
-      <default class="motor_DM3507">
-        <joint frictionloss="0.01" damping="0.01" armature="0.0049" limited="true" type="hinge" />
-        <motor forcelimited="true" forcerange="-7 7" />
-      </default>
-      <default class="motor_finger">
-        <joint limited="true" type="hinge" damping="2" />
-        <position forcelimited="true" forcerange="-333 333" ctrllimited="true" ctrlrange="0 0.7854" />
-      </default>
-      <default class="lifter">
-        <joint limited="true" type="slide" damping="50" />
-        <position forcelimited="true" forcerange="-3000 3000" ctrllimited="true" ctrlrange="0 0.3" />
-      </default>
-      <default class="position_DM8009">
-        <position kp="200" kv="150" forcelimited="true" forcerange="-40 40" />
-      </default>
-      <default class="position_DM4340">
-        <position kp="100" kv="30" forcelimited="true" forcerange="-27 27" />
-      </default>
-      <default class="position_DM4310">
-        <position kp="200" kv="5" forcelimited="true" forcerange="-7 7" />
-      </default>
-      <default class="position_DM3507">
-        <position kp="200" kv="5" forcelimited="true" forcerange="-7 7" />
-      </default>
-      <default class="position_lifter">
-        <position kp="8000" kv="4000" forcelimited="true" forcerange="-3000 3000" />
-      </default>
-      <default class="collision">
-        <geom material="collision_material" condim="3" conaffinity="1" priority="1" group="3" solref="0.005 1" friction="130.0 0.10 0.05" />
-        <equality solimp="0.99 0.999 1e-05" solref="0.005 1" />
-      </default>
-      <default class="visual">
-        <geom material="visualgeom" contype="0" conaffinity="0" group="2" />
-      </default>
+    <default class="motor_DM8009">
+      <joint frictionloss="0.2" damping="1.0" armature="0.0081" limited="true" type="hinge" />
+      <motor forcelimited="true" forcerange="-40 40" />
+    </default>
+    <default class="motor_DM4340">
+      <joint frictionloss="0.1" damping="0.9" armature="0.1600" limited="true" type="hinge" />
+      <motor forcelimited="true" forcerange="-27 27" />
+    </default>
+    <default class="motor_DM4310">
+      <joint frictionloss="0.04" damping="0.9" armature="0.0100" limited="true" type="hinge" />
+      <motor forcelimited="true" forcerange="-7 7" />
+    </default>
+    <default class="motor_DM3507">
+      <joint frictionloss="0.01" damping="0.01" armature="0.0049" limited="true" type="hinge" />
+      <motor forcelimited="true" forcerange="-7 7" />
+    </default>
+    <default class="motor_finger">
+      <joint limited="true" type="hinge" damping="2" />
+      <position forcelimited="true" forcerange="-333 333" ctrllimited="true" ctrlrange="0 0.7854" />
+    </default>
+    <default class="lifter">
+      <joint limited="true" type="slide" damping="50" />
+      <position forcelimited="true" forcerange="-3000 3000" ctrllimited="true" ctrlrange="0 0.3" />
+    </default>
+    <default class="position_DM8009">
+      <position kp="200" kv="150" forcelimited="true" forcerange="-40 40" />
+    </default>
+    <default class="position_DM4340">
+      <position kp="100" kv="30" forcelimited="true" forcerange="-27 27" />
+    </default>
+    <default class="position_DM4310">
+      <position kp="200" kv="5" forcelimited="true" forcerange="-7 7" />
+    </default>
+    <default class="position_DM3507">
+      <position kp="200" kv="5" forcelimited="true" forcerange="-7 7" />
+    </default>
+    <default class="position_lifter">
+      <position kp="8000" kv="4000" forcelimited="true" forcerange="-3000 3000" />
+    </default>
+    <default class="collision">
+      <geom material="collision_material" condim="4" contype="1" conaffinity="1" priority="1" group="3" solref="0.005 1" friction="3.0 0.5 0.1" />
+    </default>
+    <default class="visual">
+      <geom material="visualgeom" contype="0" conaffinity="0" group="2" />
     </default>
   </default>
   <compiler angle="radian" meshdir="assets" />
@@ -373,6 +370,26 @@ limitations under the License.
     <position name="right_finger1_ctrl" joint="openarm_right_finger_joint1" class="position_DM4310" kp="30" kv="0.2" ctrllimited="true" ctrlrange="-0.7854 0" />
   </actuator>
   <contact>
+    <exclude body1="openarm_left_base_link" body2="openarm_left_link1" />
+    <exclude body1="openarm_left_link1" body2="openarm_left_link2" />
+    <exclude body1="openarm_left_link2" body2="openarm_left_link3" />
+    <exclude body1="openarm_left_link3" body2="openarm_left_link4" />
+    <exclude body1="openarm_left_link4" body2="openarm_left_link5" />
+    <exclude body1="openarm_left_link5" body2="openarm_left_link6" />
+    <exclude body1="openarm_left_link6" body2="openarm_left_ee_base_link" />
+    <exclude body1="openarm_left_ee_base_link" body2="openarm_left_ee_inner_finger" />
+    <exclude body1="openarm_left_ee_base_link" body2="openarm_left_ee_outer_finger" />
+    <exclude body1="openarm_left_ee_inner_finger" body2="openarm_left_ee_outer_finger" />
 
+    <exclude body1="openarm_right_base_link" body2="openarm_right_link1" />
+    <exclude body1="openarm_right_link1" body2="openarm_right_link2" />
+    <exclude body1="openarm_right_link2" body2="openarm_right_link3" />
+    <exclude body1="openarm_right_link3" body2="openarm_right_link4" />
+    <exclude body1="openarm_right_link4" body2="openarm_right_link5" />
+    <exclude body1="openarm_right_link5" body2="openarm_right_link6" />
+    <exclude body1="openarm_right_link6" body2="openarm_right_ee_base_link" />
+    <exclude body1="openarm_right_ee_base_link" body2="openarm_right_ee_inner_finger" />
+    <exclude body1="openarm_right_ee_base_link" body2="openarm_right_ee_outer_finger" />
+    <exclude body1="openarm_right_ee_inner_finger" body2="openarm_right_ee_outer_finger" />
   </contact>
 </mujoco>

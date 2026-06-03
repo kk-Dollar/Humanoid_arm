@@ -339,11 +339,10 @@ class WristServoBase(Node):
         if is_aligned:
             self._aligned_event.set()  # Wake up align_callback waiting thread
 
-        # Publish the refined cube pose to /wrist_cube_pose when visual servoing is active
-        if self.servoing_active:
-            refined_pose = self._get_refined_pose_from_aruco(bgr, msg.header.stamp)
-            if refined_pose is not None:
-                self._wrist_cube_pose_pub.publish(refined_pose)
+        # Publish the refined cube pose to /wrist_cube_pose when detected
+        refined_pose = self._get_refined_pose_from_aruco(bgr, msg.header.stamp)
+        if refined_pose is not None:
+            self._wrist_cube_pose_pub.publish(refined_pose)
 
         self._maybe_publish_debug(
             bgr, cx_img, cy_img,

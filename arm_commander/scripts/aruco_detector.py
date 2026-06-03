@@ -37,9 +37,10 @@ CUBE_SIZE_Z = 0.06  # metres
 # Systematic calibration bias: camera-detected - ground-truth
 # Keep x/y as measured and only apply a depth correction.
 # Offsets = raw - truth; subtracting from raw applies the correction.
-CALIB_OFFSET_X = 0.058   # raw(0.338) - truth(0.280)
-CALIB_OFFSET_Y = -0.065  # raw(-0.165) - truth(-0.100)
-CALIB_OFFSET_Z = 0.092   # raw(0.328) - truth(0.236)
+# hardcoded calibration for X=0.15 position
+CALIB_OFFSET_X = 0.118   # raw(0.268) - truth(0.150)
+CALIB_OFFSET_Y = -0.139  # raw(-0.239) - truth(-0.100)
+CALIB_OFFSET_Z = 0.178   # raw(0.428) - truth(0.250)
 
 
 class KalmanFilter3D:
@@ -296,21 +297,12 @@ class ArucoDetectorNode(Node):
             if dt_since_last_seen > 1.5:
                 self.last_smoothed_pos = None
 
-        print(f"[DEBUG] camera_frame={camera_frame}")
-        print(f"[DEBUG] tvec={tvec.tolist()} | rvec={rvec.tolist()}")
-        print(f"[DEBUG] tf_world_cam: trans={t_world_cam.tolist()} | rot={q_world_cam.tolist()}")
-        print(f"[DEBUG] raw_pos={raw_pos.tolist()}")
-        print(f"[DEBUG] corrected_pos={corrected_pos.tolist()}")
-        print(f"[DEBUG] last_seen_time={self.last_seen_time.nanoseconds if self.last_seen_time is not None else None} | now={now.nanoseconds} | dt={dt_since_last_seen}")
-        print(f"[DEBUG] last_smoothed_pos (before)={self.last_smoothed_pos.tolist() if self.last_smoothed_pos is not None else None}")
-
         if self.last_smoothed_pos is None:
             self.last_smoothed_pos = corrected_pos.copy()
         else:
             alpha = 0.2
             self.last_smoothed_pos = alpha * corrected_pos + (1.0 - alpha) * self.last_smoothed_pos
         smoothed_pos = self.last_smoothed_pos
-        print(f"[DEBUG] last_smoothed_pos (after)={self.last_smoothed_pos.tolist()}")
 
         pose.pose.position.x = float(smoothed_pos[0])
         pose.pose.position.y = float(smoothed_pos[1])
@@ -416,7 +408,7 @@ class ArucoDetectorNode(Node):
             self.last_pose_world = self.last_wrist_pose
             self.last_seen_time = now
             self.cube_pose_pub.publish(self.last_pose_world)
-            self.publish_collision_object(self.last_pose_world)
+            # self.publish_collision_object(self.last_pose_world)
             self.publish_detected(True)
             return
 
@@ -426,7 +418,7 @@ class ArucoDetectorNode(Node):
             return
         self.cube_pose_pub.publish(self.last_pose_world)
         # Also publish as MoveIt collision object for planning scene
-        self.publish_collision_object(self.last_pose_world)
+        # self.publish_collision_object(self.last_pose_world)
 
     def maybe_publish_debug_image(self, bgr: np.ndarray, frame_id: str) -> None:
         """

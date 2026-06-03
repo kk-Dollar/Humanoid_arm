@@ -4,6 +4,8 @@
 #include <example_interfaces/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit_msgs/msg/collision_object.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 
@@ -39,6 +41,20 @@ public:
   // Returns value clamped to [0.0, 0.7].
   double gapToJointValue(double gap_meters);
 
+  // ── Collision object management ──────────────────────────────────────────
+
+  // Attaches a collision object to the gripper so MoveIt treats it as part
+  // of the robot (stops treating it as an obstacle) — call right after grasp.
+  // object_id : the CollisionObject id (e.g. "detected_cube")
+  // arm_name  : "left" or "right" — determines which gripper link to attach to
+  void attachCubeToGripper(const std::string &object_id,
+                            const std::string &arm_name);
+
+  // Detaches a previously attached object and puts it back in the world.
+  // Call before releasing the gripper at the place pose.
+  void detachCubeFromGripper(const std::string &object_id,
+                              const std::string &arm_name);
+
   // ── Pose helpers ─────────────────────────────────────────────────────────
 
   // Build a Pose from position + Roll-Pitch-Yaw (radians).
@@ -68,6 +84,9 @@ public:
   void moveCartesianByZ(const std::string &arm_name, double delta_z);
   void moveCartesianByY(const std::string &arm_name, double delta_y);
   void moveCartesianByX(const std::string &arm_name, double delta_x);
+
+  // Cartesian straight-line move to a specific target pose
+  void moveCartesianToPose(const geometry_msgs::msg::Pose &target_pose, const std::string &arm_name);
   void moveCartesianByAxis(
     const std::string &arm_name, double dx, double dy, double dz);
 
@@ -102,4 +121,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Pose>::SharedPtr                 pose_target_sub_;
 
   bool last_command_succeeded_{true};
+
+  // MoveIt planning scene interface — used for attach/detach of grasped objects
+  moveit::planning_interface::PlanningSceneInterface planning_scene_interface_;
 };
