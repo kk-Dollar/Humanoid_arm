@@ -90,6 +90,10 @@ public:
   void moveCartesianByAxis(
     const std::string &arm_name, double dx, double dy, double dz);
 
+  // Returns the current end-effector pose of the specified arm in the world frame.
+  // Useful for computing dynamic targets relative to the live robot state.
+  geometry_msgs::msg::Pose getCurrentEEPose(const std::string &arm_name);
+
 private:
   void planAndExecute(
     const std::shared_ptr<moveit::planning_interface::MoveGroupInterface> &interface);

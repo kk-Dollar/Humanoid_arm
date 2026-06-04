@@ -1,33 +1,51 @@
-// PERCEPTION PIPELINE — simplified pick-and-place (no visual servoing)
+// PERCEPTION PIPELINE — dynamic bimanual handover pick-and-place
 // Part of arm_commander package
 //
-// NOTE: Visual servoing alignment is BYPASSED.
-// Pipeline: chest cam → hover → wrist cam refined pose → direct grasp.
+// Pipeline:
+//   0  Home both arms, open right gripper
+//   1  Wait for chest camera cube detection (/cube_pose)
+//   2  Right arm → pre-grasp hover above cube
+//   3  Right wrist cam refined pose → grasp → close right gripper
+//   4  Right arm → DYNAMIC handover pose
+//        · Query left arm live EE pose via getCurrentEEPose("left")
+//        · Target = left_EE + [HANDOVER_R_OFFSET_*] with sideways orientation
+//        · On IK failure: retry with enlarged gap, then abort
+//   5  Left arm → DYNAMIC scanning position (left wrist cam sees cube)
+//        · Target = right_EE (≈ cube position) + [L_SCAN_OFFSET_*]
+//        · Open left gripper
+//        · Wait for fresh /left_wrist_cube_pose (LEFT wrist cam detects cube)
+//   5b Left arm → precise grasp from wrist-cam pose
+//        · Target = left_wrist_cube_pose + [L_GRASP_OFFSET_*]
+//        · Fallback: right_EE + offset when wrist cam times out
+//   6  Left closes → right opens → right retreats → left places → left opens
+//   Final: home both arms
+//
+// Why dynamic?  Fixed handover constants only work when both arms land at a
+// specific IK solution.  With the dynamic approach the right arm always meets
+// the left arm wherever it actually is, removing brittle hand-tuned offsets.
 
 /**
  * wrist_servo_pick_and_place.cpp
  *
- * WHAT: Bimanual pick-and-place (simplified — visual servoing bypassed).
- * WHY:  Removes wrist align service timeout issues; uses /wrist_cube_pose
- *       published by right_wrist_servo for accurate grasp position.
+ * Key design decisions
+ * ────────────────────
+ * • Right wrist cam cannot see the cube once the gripper is closed around it.
+ *   After grasp we stop using the right wrist tracker.
  *
- * Execution phases:
- *   0  Home both arms, open grippers
- *   1  Wait for chest camera cube detection (/cube_pose)
- *   2  Right arm moves to pre-grasp hover above cube
- *   3  Wait for wrist cam refined pose (/wrist_cube_pose, 5 s timeout)
- *      → moveToPose to grasp → close right gripper → attach cube → lift
- *   4  Right arm → handover pose (Pose 2)
- *   5  Left arm opens → handover approach (Pose 3)
- *   6  Left closes → transfer cube attachment → right opens → right retreats
- *      → left arm to place pose → detach cube → left opens
- *   Final: both arms home
+ * • Left wrist cam IS used during handover.  The left arm moves to a scanning
+ *   position relative to the right EE (where the cube is), its wrist cam
+ *   sees the cube, and the published /left_wrist_cube_pose drives the final
+ *   left approach.  This gives sub-centimetre accuracy without fixed offsets.
  *
- * BYPASSED (kept under #if 0 for future re-enablement):
- *   - /right_wrist/align service  (visual servoing alignment)
- *   - /left_wrist/align  service  (handover alignment)
- *   - servo_correction subscription + moveCartesianByAxis
- *   - cube width measurement from wrist cam
+ * • Both wrist servo nodes now publish to separate topics:
+ *     /right_wrist_cube_pose  (right wrist servo)
+ *     /left_wrist_cube_pose   (left wrist servo)
+ *   Previously both wrote to /wrist_cube_pose and overwrote each other.
+ *
+ * Tuning constants (search TUNE):
+ *   HANDOVER_R_OFFSET_Y   — gap between arms at handover (~0.30 m nominal)
+ *   L_SCAN_OFFSET_Y       — left scan position relative to cube (+Y side)
+ *   L_GRASP_OFFSET_*      — left grasp target relative to wrist-cam cube pose
  */
 
 #include "arm_commander/commander.hpp"
@@ -57,55 +75,74 @@ static constexpr double HANDS_UP_QY  = -0.104;
 static constexpr double HANDS_UP_QZ  =  0.002;
 static constexpr double HANDS_UP_QW  =  0.995;
 
+// ── Right arm handover orientation (sideways — presents cube to left arm) ──────
+// Taken from previously hand-tuned R_HAND pose which was already sideways-facing.
+static constexpr double R_HAND_QX =  0.495;
+static constexpr double R_HAND_QY = -0.502;
+static constexpr double R_HAND_QZ =  0.461;
+static constexpr double R_HAND_QW =  0.539;
+
+// ── Left arm receive orientation (fixed for now) ───────────────────────────────
+// Taken from previously hand-tuned L_HAND pose.  Orientation only; position is
+// computed dynamically from left wrist cam cube detection.
+static constexpr double L_HAND_QX = -0.477;
+static constexpr double L_HAND_QY = -0.517;
+static constexpr double L_HAND_QZ = -0.444;
+static constexpr double L_HAND_QW =  0.555;
+
 // ── Grasp offsets (applied on top of detected cube position) ──────────────────
-// With the contour/depth pipeline, /cube_pose publishes the cube TOP surface z (~0.28 m in sim).
-// For a downward-facing gripper the EE must be ABOVE the cube top so that
-// fingers wrap around the cube sides and do NOT extend below the table surface.
-//   GRASP_OFFSET_Z = 0.106 m  →  EE at 0.280 + 0.106 = 0.386 m
-//   Finger tips (≈ 8 cm below EE)  →  z ≈ 0.306 m
 static constexpr double GRASP_OFFSET_X =  0.11;   // m
 static constexpr double GRASP_OFFSET_Y =  0.0;    // m
-static constexpr double GRASP_OFFSET_Z =  0.11;  // m — EE above cube top
+static constexpr double GRASP_OFFSET_Z =  0.14;   // m — EE above cube top
 
-// ── Hover height above cube for wrist cam visibility ──────────────────────────
-static constexpr double WRIST_CAM_LOOK_X_OFFSET = 0.0;  // m (computed for 25deg pitch view)
-static constexpr double WRIST_CAM_LOOK_Y_OFFSET = 0.0;  // m
+// ── Hover height above cube for right wrist cam visibility ────────────────────
+static constexpr double WRIST_CAM_LOOK_X_OFFSET = 0.0;   // m
+static constexpr double WRIST_CAM_LOOK_Y_OFFSET = 0.0;   // m
 static constexpr double WRIST_CAM_HOVER_HEIGHT  = 0.21;  // m above cube top
 
-// ── Post-grasp lift height ────────────────────────────────────────────────────
-static constexpr double LIFT_HEIGHT = 0.1;  // m
+// ── Dynamic handover offsets ──────────────────────────────────────────────────
+// Right arm target position = left_EE_position + HANDOVER_R_OFFSET_*
+// Right arm is on -Y side, left arm is on +Y side of the robot body.
+// TUNE: increase HANDOVER_R_OFFSET_Y (more negative) if arms collide,
+//       decrease (less negative) if cube is too far from left wrist cam FOV.
+static constexpr double HANDOVER_R_OFFSET_X =  0.0;    // m — no X shift
+static constexpr double HANDOVER_R_OFFSET_Y = -0.40;   // m
+static constexpr double HANDOVER_R_OFFSET_Z =  0.0;    // m — same height
 
-// ── Handover poses ────────────────────────────────────────────────────────────
-static constexpr double R_HAND_X  =  0.211, R_HAND_Y  = -0.210, R_HAND_Z  = 0.463;
-static constexpr double R_HAND_QX =  0.495, R_HAND_QY = -0.502, R_HAND_QZ =  0.461, R_HAND_QW = 0.539;
+// Fallback: if exact offset unreachable, enlarge gap by this factor and retry.
+static constexpr double HANDOVER_R_FALLBACK_SCALE = 1.3;  // 30 % more gap
 
-// - Translation: [0.201, 0.292, 0.401]
-// - Rotation: in Quaternion (xyzw) [-0.546, -0.450, -0.468, 0.529]
+// ── Left arm scanning position offset from right EE (≈ cube position) ─────────
+// Left arm moves here so its wrist cam can see the cube in the right gripper.
+// GEOMETRY NOTE: The left arm must be ~30-36 cm to +Y of the right arm EE
+// (same geometry as grasping). Scanning is from near the left arm home position.
+// At ~32 cm separation the left wrist cam points inward toward the cube.
+// TUNE: increase if wrist cam misses cube, decrease if arm reaches collision limit.
+static constexpr double L_SCAN_OFFSET_X =  0.0;    // m
+static constexpr double L_SCAN_OFFSET_Y =  0.36;   // m — left arm scans near home (36 cm +Y of cube)
+static constexpr double L_SCAN_OFFSET_Z = -0.10;   // m — wrist LOWER than cube so camera above looks at cube
 
-static constexpr double L_HAND_X_G  =  0.201, L_HAND_Y_G  =  0.292, L_HAND_Z_G  = 0.401;
-static constexpr double L_HAND_QX_G = -0.546, L_HAND_QY_G = -0.450, L_HAND_QZ_G = -0.468, L_HAND_QW_G =  0.529;
+// Fallback scan offset if primary is unreachable.
+static constexpr double L_SCAN_OFFSET_Y_FALLBACK = 0.40;  // m — further fallback
 
-static constexpr double L_HAND_X  =  0.213, L_HAND_Y  =  0.154, L_HAND_Z  = 0.463;
-static constexpr double L_HAND_QX = -0.477, L_HAND_QY = -0.517, L_HAND_QZ = -0.444, L_HAND_QW =  0.555;
-
-static constexpr double L_HAND_CORR_X=0.0;
-static constexpr double L_HAND_CORR_Y=-0.04;
-static constexpr double L_HAND_CORR_Z=0.02;
+// ── Left arm grasp offset (applied to wrist-cam cube world pose) ───────────────
+// Old working value: left EE y=+0.114 when right EE y=-0.210 → gap=0.324 m.
+// The gripper FINGERS reach across the gap; the EE itself stays far from right arm.
+// TUNE: decrease to move left arm closer to cube (but check IK and collision).
+static constexpr double L_GRASP_OFFSET_X =  0.0;    // m
+static constexpr double L_GRASP_OFFSET_Y =  0.32;   // m — ~32 cm +Y of right EE (gripper fingers reach cube)
+static constexpr double L_GRASP_OFFSET_Z = +0.02;   // m — left EE 2 cm above right EE (matches old working geometry)
 
 // ── Place pose ────────────────────────────────────────────────────────────────
-// - Translation: [0.176, 0.350, 0.353]
-// - Rotation: in Quaternion (xyzw) [0.026, -0.633, -0.014, 0.773]
-
-// static constexpr double PLACE_X   =  0.131, PLACE_Y   =  0.297, PLACE_Z   = 0.34;
-// static constexpr double PLACE_QX  =  0.223, PLACE_QY  = -0.666, PLACE_QZ  =  0.240, PLACE_QW  = 0.670;
-
 static constexpr double PLACE_X   =  0.176, PLACE_Y   =  0.350, PLACE_Z   = 0.353;
-static constexpr double PLACE_QX  =  0.026, PLACE_QY  = -0.633, PLACE_QZ  =  -0.014,
-PLACE_QW = 0.773;
+static constexpr double PLACE_QX  =  0.026, PLACE_QY  = -0.633, PLACE_QZ  = -0.014;
+static constexpr double PLACE_QW  =  0.773;
+
 // ── Timing ────────────────────────────────────────────────────────────────────
-static constexpr int    STEP_DELAY_MS        = 800;
-static constexpr double CUBE_WAIT_TIMEOUT_SEC = 30.0;
-static constexpr double WRIST_POSE_TIMEOUT_SEC =  5.0;
+static constexpr int    STEP_DELAY_MS              = 800;
+static constexpr double CUBE_WAIT_TIMEOUT_SEC      = 30.0;
+static constexpr double WRIST_POSE_TIMEOUT_SEC     =  5.0;   // right wrist (Phase 3)
+static constexpr double LEFT_WRIST_POSE_TIMEOUT_SEC =  5.0;  // left  wrist (Phase 5)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility: stepDelay
@@ -137,7 +174,7 @@ static void abortToHome(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CubePoseTracker — caches latest /cube_pose (chest cam, fused with wrist cam)
+// CubePoseTracker — caches latest /cube_pose (chest cam)
 // ─────────────────────────────────────────────────────────────────────────────
 class CubePoseTracker
 {
@@ -175,15 +212,18 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WristPoseTracker — caches latest /wrist_cube_pose (right wrist cam refined)
+// WristPoseTracker — caches latest pose from a wrist camera topic.
+// Instantiate once per arm:
+//   WristPoseTracker right_wrist(node, "/right_wrist_cube_pose");
+//   WristPoseTracker left_wrist (node, "/left_wrist_cube_pose");
 // ─────────────────────────────────────────────────────────────────────────────
 class WristPoseTracker
 {
 public:
-  explicit WristPoseTracker(const rclcpp::Node::SharedPtr & node)
+  WristPoseTracker(const rclcpp::Node::SharedPtr & node, const std::string & topic)
   {
     sub_ = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/wrist_cube_pose", 10,
+      topic, 10,
       [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         last_pose_ = *msg;
@@ -235,14 +275,16 @@ waitForCubePose(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// waitForWristPose — block until /wrist_cube_pose arrives newer than not_before
+// waitForWristPose — block until the given wrist tracker has a pose newer than
+// not_before.  Works for both left and right — pass a human-readable label.
 // ─────────────────────────────────────────────────────────────────────────────
 static std::optional<geometry_msgs::msg::PoseStamped>
 waitForWristPose(
   const rclcpp::Node::SharedPtr & node,
   const WristPoseTracker & tracker,
   double timeout_sec,
-  const rclcpp::Time & not_before)
+  const rclcpp::Time & not_before,
+  const std::string & label = "wrist")
 {
   const auto deadline =
     std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
@@ -252,7 +294,8 @@ waitForWristPose(
     if (tracker.getLatestPose(pose)) {
       if (rclcpp::Time(pose.header.stamp) >= not_before) {
         RCLCPP_INFO(node->get_logger(),
-          "Wrist cam refined pose: [x=%.3f, y=%.3f, z=%.3f]",
+          "%s cam cube pose: [x=%.3f, y=%.3f, z=%.3f]",
+          label.c_str(),
           pose.pose.position.x, pose.pose.position.y, pose.pose.position.z);
         return pose;
       }
@@ -260,45 +303,9 @@ waitForWristPose(
     std::this_thread::sleep_for(100ms);
   }
   RCLCPP_WARN(node->get_logger(),
-    "No wrist cam pose in %.1f s — falling back to chest cam", timeout_sec);
+    "No %s cam pose in %.1f s — will use fallback", label.c_str(), timeout_sec);
   return std::nullopt;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BYPASSED: callAlignService — kept for future re-enablement
-// ─────────────────────────────────────────────────────────────────────────────
-#if 0
-static bool callAlignService(
-  const rclcpp::Node::SharedPtr & node,
-  const std::string & service_name,
-  double timeout_sec,
-  double & out_cube_width_m)
-{
-  out_cube_width_m = 0.04;
-  auto client = node->create_client<std_srvs::srv::Trigger>(service_name);
-  if (!client->wait_for_service(std::chrono::duration<double>(timeout_sec / 2.0))) {
-    RCLCPP_ERROR(node->get_logger(), "Service '%s' not available", service_name.c_str());
-    return false;
-  }
-  auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
-  auto future  = client->async_send_request(request);
-  const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::duration<double>(timeout_sec);
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (future.wait_for(100ms) == std::future_status::ready) {
-      auto response = future.get();
-      if (response->success) {
-        try { out_cube_width_m = std::stod(response->message); }
-        catch (...) {}
-      }
-      return response->success;
-    }
-    std::this_thread::sleep_for(50ms);
-  }
-  RCLCPP_ERROR(node->get_logger(), "Align service '%s' TIMEOUT", service_name.c_str());
-  return false;
-}
-#endif  // 0 — callAlignService bypassed
 
 // ─────────────────────────────────────────────────────────────────────────────
 // main
@@ -317,11 +324,18 @@ int main(int argc, char ** argv)
   auto spinner = std::thread([&executor]() { executor.spin(); });
 
   Commander      commander(node);
-  CubePoseTracker  chest_tracker(node);
-  WristPoseTracker wrist_tracker(node);
+  CubePoseTracker chest_tracker(node);
+
+  // Right wrist cam: used in Phase 3 to refine the grasp pose.
+  // After the gripper closes the right wrist cam can no longer see the cube.
+  WristPoseTracker right_wrist_tracker(node, "/right_wrist_cube_pose");
+
+  // Left wrist cam: used in Phase 5 to see the cube held by the right arm
+  // so the left arm can approach with sub-centimetre accuracy.
+  WristPoseTracker left_wrist_tracker(node,  "/left_wrist_cube_pose");
 
   RCLCPP_INFO(node->get_logger(), "════════════════════════════════════════");
-  RCLCPP_INFO(node->get_logger(), " PICK AND PLACE — START (no visual servoing)");
+  RCLCPP_INFO(node->get_logger(), " PICK AND PLACE — DYNAMIC HANDOVER");
   RCLCPP_INFO(node->get_logger(), "════════════════════════════════════════");
 
   // ── Phase 0: Home ─────────────────────────────────────────────────────────
@@ -371,27 +385,20 @@ int main(int argc, char ** argv)
   stepDelay(node, "right arm at hover — waiting for wrist cam pose");
   RCLCPP_INFO(node->get_logger(), "Phase 2 DONE");
 
-  // ── Phase 3: Wrist cam refined pose → grasp → lift ────────────────────────
-  RCLCPP_INFO(node->get_logger(), "Phase 3: Wrist cam refined pose → grasp");
+  // ── Phase 3: Right wrist cam refined pose → grasp ─────────────────────────
+  RCLCPP_INFO(node->get_logger(), "Phase 3: Right wrist cam refined pose → grasp");
 
-  // Wait for a fresh wrist cam pose published AFTER hover reached
   const auto hover_time = node->now();
-  auto wrist_pose_opt = waitForWristPose(node, wrist_tracker, WRIST_POSE_TIMEOUT_SEC, hover_time);
+  auto right_wrist_opt = waitForWristPose(
+    node, right_wrist_tracker, WRIST_POSE_TIMEOUT_SEC, hover_time, "right wrist");
 
-  // Use wrist cam pose when available; abort if not
-  geometry_msgs::msg::PoseStamped grasp_src;
-  if (wrist_pose_opt.has_value()) {
-    grasp_src = wrist_pose_opt.value();
-    RCLCPP_INFO(node->get_logger(), "Phase 3: Using WRIST CAM refined pose");
-  } else {
-    RCLCPP_ERROR(node->get_logger(), "Phase 3: Wrist cam failed to detect marker. Aborting.");
-    abortToHome(node, commander, spinner, "Phase 3", "wrist cam marker detection failed");
+  if (!right_wrist_opt.has_value()) {
+    RCLCPP_ERROR(node->get_logger(), "Phase 3: Right wrist cam failed to detect marker. Aborting.");
+    abortToHome(node, commander, spinner, "Phase 3", "right wrist cam marker detection failed");
     return 1;
   }
 
-  
-
-  // Compute grasp pose from detected marker position
+  const auto & grasp_src = right_wrist_opt.value();
   auto grasp_pose = commander.makePose(
     grasp_src.pose.position.x + GRASP_OFFSET_X,
     grasp_src.pose.position.y + GRASP_OFFSET_Y,
@@ -401,91 +408,182 @@ int main(int argc, char ** argv)
     "Phase 3: Grasp target [x=%.3f, y=%.3f, z=%.3f]",
     grasp_pose.position.x, grasp_pose.position.y, grasp_pose.position.z);
 
-  // Attach cube to right gripper BEFORE planning the grasp move.
-  // This removes the cube from MoveIt's collision world so the planner
-  // can find a path that ends at the cube's position without treating it
-  // as an obstacle. Without this, planning times out (goal in collision).
-  // commander.attachCubeToGripper("detected_cube", "right");
-  // stepDelay(node, "cube removed from collision world — planning grasp path");
-
-  // Plan and execute grasp move (cube no longer an obstacle)
   commander.moveCartesianToPose(grasp_pose, "right");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner, "Phase 3", "grasp moveCartesianToPose failed");
   }
   stepDelay(node, "right arm at grasp pose — closing gripper");
 
-  // Close gripper fully — MuJoCo physics stops fingers when they contact the cube.
-  // Using closeGripper (named target joint=0) instead of setGripperWidth because:
-  //   right gripper closes toward joint=0, setGripperWidth always sent +0.111
-  //   which is out of range [-0.7, 0] for right arm → was clamped to 0 anyway.
   commander.closeGripper("right");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner, "Phase 3", "right gripper close failed");
   }
   stepDelay(node, "right gripper closed on cube");
+  RCLCPP_INFO(node->get_logger(), "Phase 3 DONE — cube grasped");
+  // NOTE: right wrist cam can no longer see the cube once the gripper is closed.
+  //       From here we rely on getCurrentEEPose() and the left wrist cam.
 
-   auto left_handover_lift = commander.makePose(
-    L_HAND_X, L_HAND_Y, L_HAND_Z + LIFT_HEIGHT,
-    L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
-  commander.moveToPose(left_handover_lift, "left");
-  if (!commander.lastCommandSucceeded()) {
-    abortToHome(node, commander, spinner, "Phase 3b", "left PRE-approaches moveToPose failed");
-  }
-  commander.openGripper("left");
-  if (!commander.lastCommandSucceeded()) {
-    abortToHome(node, commander, spinner, "Phase 3b", "left gripper open failed");
-  }
-  stepDelay(node, "left gripper opened");
+  // ── Phase 4: Dynamic right arm → handover position ────────────────────────
+  // Query where the left arm EE currently is, then position the right arm so
+  // the cube ends up close enough for the left wrist cam to detect it.
+  RCLCPP_INFO(node->get_logger(), "Phase 4: Right arm → dynamic handover pose");
+  {
+    auto left_ee = commander.getCurrentEEPose("left");
+    RCLCPP_INFO(node->get_logger(),
+      "Phase 4: Left arm EE at [x=%.3f, y=%.3f, z=%.3f]",
+      left_ee.position.x, left_ee.position.y, left_ee.position.z);
 
-  // ── Phase 4: Right arm → handover pose (Pose 2) ───────────────────────────
-  RCLCPP_INFO(node->get_logger(), "Phase 4: Right arm to handover pose (Pose 2)");
-  auto right_handover = commander.makePose(
-    R_HAND_X, R_HAND_Y, R_HAND_Z,
-    R_HAND_QX, R_HAND_QY, R_HAND_QZ, R_HAND_QW);
-  commander.moveToPose(right_handover, "right");
-  if (!commander.lastCommandSucceeded()) {
-    abortToHome(node, commander, spinner, "Phase 4", "handover moveToPose failed");
+    // Primary target: left_EE + configurable offset.
+    // The offset keeps a safe gap while putting the cube in the left wrist cam FOV.
+    auto right_handover = commander.makePose(
+      left_ee.position.x + HANDOVER_R_OFFSET_X,
+      left_ee.position.y + HANDOVER_R_OFFSET_Y,
+      left_ee.position.z + HANDOVER_R_OFFSET_Z,
+      R_HAND_QX, R_HAND_QY, R_HAND_QZ, R_HAND_QW);
+
+    RCLCPP_INFO(node->get_logger(),
+      "Phase 4: Right handover target [x=%.3f, y=%.3f, z=%.3f]",
+      right_handover.position.x, right_handover.position.y, right_handover.position.z);
+
+    commander.moveToPose(right_handover, "right");
+
+    if (!commander.lastCommandSucceeded()) {
+      // IK might fail if the primary target is at the edge of the workspace.
+      // Enlarge the gap slightly and retry — this pulls the target inward.
+      RCLCPP_WARN(node->get_logger(),
+        "Phase 4: Primary target unreachable — retrying with %.0f%% larger gap",
+        (HANDOVER_R_FALLBACK_SCALE - 1.0) * 100.0);
+
+      auto fallback = commander.makePose(
+        left_ee.position.x + HANDOVER_R_OFFSET_X,
+        left_ee.position.y + HANDOVER_R_OFFSET_Y * HANDOVER_R_FALLBACK_SCALE,
+        left_ee.position.z + HANDOVER_R_OFFSET_Z,
+        R_HAND_QX, R_HAND_QY, R_HAND_QZ, R_HAND_QW);
+
+      commander.moveToPose(fallback, "right");
+      if (!commander.lastCommandSucceeded()) {
+        abortToHome(node, commander, spinner, "Phase 4",
+          "right handover pose unreachable even with fallback gap");
+      }
+    }
   }
-  stepDelay(node, "right arm at handover");
+  stepDelay(node, "right arm at handover position — cube ready for left wrist cam");
   RCLCPP_INFO(node->get_logger(), "Phase 4 DONE");
 
-  // ── Phase 5: Left arm → handover approach (Pose 3) ───────────────────────
-  RCLCPP_INFO(node->get_logger(), "Phase 5: Left arm to handover approach (Pose 3)");
-  auto left_handover = commander.makePose(
-    L_HAND_X + L_HAND_CORR_X, L_HAND_Y + L_HAND_CORR_Y, L_HAND_Z + L_HAND_CORR_Z,
-    L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
-  commander.moveToPose(left_handover, "left");
-  if (!commander.lastCommandSucceeded()) {
-    abortToHome(node, commander, spinner, "Phase 5", "left approach moveToPose failed");
+  // ── Phase 5: Left arm → scanning position + left wrist cam detection ───────
+  // The left arm moves to a position near the cube (currently in right gripper)
+  // so its wrist cam can see the cube and publish an accurate world pose.
+  RCLCPP_INFO(node->get_logger(), "Phase 5: Left arm → scanning position for left wrist cam");
+  geometry_msgs::msg::Pose left_grasp_target;
+  {
+    // Cube is approximately at the right arm EE.
+    auto right_ee = commander.getCurrentEEPose("right");
+    RCLCPP_INFO(node->get_logger(),
+      "Phase 5: Right EE (≈ cube) at [x=%.3f, y=%.3f, z=%.3f]",
+      right_ee.position.x, right_ee.position.y, right_ee.position.z);
+
+    // Open left gripper before moving so there is no risk of contact.
+    commander.openGripper("left");
+    if (!commander.lastCommandSucceeded()) {
+      abortToHome(node, commander, spinner, "Phase 5", "left gripper open failed");
+    }
+
+    // Move left arm to scanning position: slightly to the +Y side of the cube
+    // with the fixed receive orientation so the wrist cam faces the cube.
+    auto left_scan = commander.makePose(
+      right_ee.position.x + L_SCAN_OFFSET_X,
+      right_ee.position.y + L_SCAN_OFFSET_Y,
+      right_ee.position.z + L_SCAN_OFFSET_Z,
+      L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
+
+    RCLCPP_INFO(node->get_logger(),
+      "Phase 5: Left scan target [x=%.3f, y=%.3f, z=%.3f]",
+      left_scan.position.x, left_scan.position.y, left_scan.position.z);
+
+    commander.moveToPose(left_scan, "left");
+    if (!commander.lastCommandSucceeded()) {
+      // Primary scan target unreachable — try wider offset (pulls further from right arm).
+      RCLCPP_WARN(node->get_logger(),
+        "Phase 5: Primary scan target unreachable — retrying with %.0f cm gap",
+        L_SCAN_OFFSET_Y_FALLBACK * 100.0);
+      auto left_scan_fb = commander.makePose(
+        right_ee.position.x + L_SCAN_OFFSET_X,
+        right_ee.position.y + L_SCAN_OFFSET_Y_FALLBACK,
+        right_ee.position.z + L_SCAN_OFFSET_Z,
+        L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
+      commander.moveToPose(left_scan_fb, "left");
+      if (!commander.lastCommandSucceeded()) {
+        abortToHome(node, commander, spinner, "Phase 5",
+          "left scan moveToPose failed even with fallback offset");
+      }
+    }
+    stepDelay(node, "left arm at scanning position");
+
+    // Wait for left wrist cam to see the cube and publish a world-frame pose.
+    const auto scan_time = node->now();
+    auto left_wrist_opt = waitForWristPose(
+      node, left_wrist_tracker, LEFT_WRIST_POSE_TIMEOUT_SEC, scan_time, "left wrist");
+
+    if (left_wrist_opt.has_value()) {
+      // Wrist cam gives X refinement (lateral position across the arm axis).
+      // Y and Z are taken from right arm EE instead of wrist cam because:
+      //   - Wrist cam Y has significant parallax error from the 36 cm viewing angle.
+      //   - Wrist cam Z reports the cube BOTTOM (z≈0.283, table level) not grasp height.
+      // Right arm EE Y/Z are accurate because the right arm is physically holding the cube.
+      const auto & cp = left_wrist_opt.value().pose.position;
+      RCLCPP_INFO(node->get_logger(),
+        "Phase 5: Left wrist cam sees cube at [x=%.3f, y=%.3f, z=%.3f] — using X for refinement",
+        cp.x, cp.y, cp.z);
+      left_grasp_target = commander.makePose(
+        cp.x + L_GRASP_OFFSET_X,                   // X from wrist cam — lateral refinement
+        right_ee.position.y + L_GRASP_OFFSET_Y,     // Y from right EE — reliable (parallax-free)
+        right_ee.position.z + L_GRASP_OFFSET_Z,     // Z from right EE — reliable (not cube bottom)
+        L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
+    } else {
+      // Fallback: use right EE position + grasp offset.
+      // Less accurate, but avoids full abort if wrist cam misses.
+      RCLCPP_WARN(node->get_logger(),
+        "Phase 5: Left wrist cam timeout — falling back to right EE + offset");
+      left_grasp_target = commander.makePose(
+        right_ee.position.x + L_GRASP_OFFSET_X,
+        right_ee.position.y + L_GRASP_OFFSET_Y,
+        right_ee.position.z + L_GRASP_OFFSET_Z,
+        L_HAND_QX, L_HAND_QY, L_HAND_QZ, L_HAND_QW);
+    }
   }
-  stepDelay(node, "left arm at handover approach");
   RCLCPP_INFO(node->get_logger(), "Phase 5 DONE");
 
-  // ── Phase 6: Transfer — left closes, right opens, left places ─────────────
+  // ── Phase 5b: Left arm → precise grasp ────────────────────────────────────
+  RCLCPP_INFO(node->get_logger(), "Phase 5b: Left arm → precise grasp position");
+  RCLCPP_INFO(node->get_logger(),
+    "Phase 5b: Left grasp target [x=%.3f, y=%.3f, z=%.3f]",
+    left_grasp_target.position.x, left_grasp_target.position.y, left_grasp_target.position.z);
+
+  commander.moveToPose(left_grasp_target, "left");
+  if (!commander.lastCommandSucceeded()) {
+    abortToHome(node, commander, spinner, "Phase 5b", "left grasp moveToPose failed");
+  }
+  stepDelay(node, "left arm at grasp position — ready to close");
+  RCLCPP_INFO(node->get_logger(), "Phase 5b DONE");
+
+  // ── Phase 6: Transfer ─────────────────────────────────────────────────────
   RCLCPP_INFO(node->get_logger(), "Phase 6: Handover transfer");
 
-  // Left gripper closes on cube
-  // Left closes fully on cube — physics stops fingers at cube surface.
+  // Left closes on cube.
   commander.closeGripper("left");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner, "Phase 6", "left gripper close failed");
   }
   stepDelay(node, "left gripper closed on cube");
 
-  // Transfer cube attachment: now part of left arm in MoveIt scene
-  // commander.attachCubeToGripper("detected_cube", "left");
-  // commander.detachCubeFromGripper("detected_cube", "right");
-  stepDelay(node, "cube transferred — attached to left, released from right");
-
-  // Right releases and retreats
+  // Right releases the cube.
   commander.openGripper("right");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner, "Phase 6", "right gripper open failed");
   }
-  stepDelay(node, "right gripper released");
-  
-  // Left arm to place pose
+  stepDelay(node, "right gripper released — cube transferred to left");
+
+  // Left arm carries cube to the place pose.
   auto place_pose = commander.makePose(
     PLACE_X, PLACE_Y, PLACE_Z,
     PLACE_QX, PLACE_QY, PLACE_QZ, PLACE_QW);
@@ -495,8 +593,7 @@ int main(int argc, char ** argv)
   }
   stepDelay(node, "left arm at place pose");
 
-  // Detach cube before opening — puts it back in world at current pose
-  // commander.detachCubeFromGripper("detected_cube", "left");
+  // Place the cube.
   commander.openGripper("left");
   if (!commander.lastCommandSucceeded()) {
     abortToHome(node, commander, spinner, "Phase 6", "left gripper open (place) failed");

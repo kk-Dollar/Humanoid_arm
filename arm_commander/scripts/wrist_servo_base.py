@@ -111,6 +111,7 @@ class WristServoBase(Node):
         aligned_topic: str,
         debug_topic: str,
         align_service_name: str,
+        wrist_cube_pose_topic: str = "/wrist_cube_pose",
     ) -> None:
         """
         WHAT: Initialises the wrist servo node with all ROS interfaces.
@@ -255,8 +256,10 @@ class WristServoBase(Node):
             Image, debug_topic, 10)
 
         # Outgoing: refined cube pose detected by wrist camera.
+        # Topic is arm-specific (e.g. /right_wrist_cube_pose or /left_wrist_cube_pose)
+        # so both nodes can run simultaneously without overwriting each other.
         self._wrist_cube_pose_pub = self.create_publisher(
-            PoseStamped, "/wrist_cube_pose", 10)
+            PoseStamped, wrist_cube_pose_topic, 10)
 
         # ── Service ──────────────────────────────────────────────────────────
 
@@ -719,6 +722,7 @@ class RightWristServoNode(WristServoBase):
             aligned_topic="/right_wrist/aligned",
             debug_topic="/right_wrist/debug_image",
             align_service_name="/right_wrist/align",
+            wrist_cube_pose_topic="/right_wrist_cube_pose",
         )
 
 
@@ -738,4 +742,5 @@ class LeftWristServoNode(WristServoBase):
             aligned_topic="/left_wrist/aligned",
             debug_topic="/left_wrist/debug_image",
             align_service_name="/left_wrist/align",
+            wrist_cube_pose_topic="/left_wrist_cube_pose",
         )

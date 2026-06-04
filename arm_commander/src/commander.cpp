@@ -381,6 +381,24 @@ void Commander::moveCartesianToPose(const geometry_msgs::msg::Pose &target_pose,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Current EE pose query
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Returns the live end-effector pose in the world/planning frame.
+// Used by the orchestrator to compute dynamic handover targets without
+// hard-coding fixed Cartesian positions.
+geometry_msgs::msg::Pose Commander::getCurrentEEPose(const std::string &arm_name)
+{
+  auto arm = getArm(arm_name);
+  if (!arm) {
+    RCLCPP_WARN(node_->get_logger(),
+      "getCurrentEEPose: unknown arm '%s' — returning identity", arm_name.c_str());
+    return geometry_msgs::msg::Pose{};   // identity: position (0,0,0), quat (0,0,0,1)
+  }
+  return arm->getCurrentPose().pose;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Planning + execution
 // ─────────────────────────────────────────────────────────────────────────────
 
