@@ -58,23 +58,19 @@ static constexpr double HANDS_UP_QZ  =  0.002;
 static constexpr double HANDS_UP_QW  =  0.995;
 
 // ── Grasp offsets (applied on top of detected cube position) ──────────────────
-// aruco_detector publishes cube CENTER z (~0.25 m in sim).
-// Cube top is at center + half_height = 0.25 + 0.03 = 0.28 m.
+// With the contour/depth pipeline, /cube_pose publishes the cube TOP surface z (~0.28 m in sim).
 // For a downward-facing gripper the EE must be ABOVE the cube top so that
 // fingers wrap around the cube sides and do NOT extend below the table surface.
-//   GRASP_OFFSET_Z = 0.050 m  →  EE at 0.25 + 0.050 = 0.300 m
-//                               = 20 mm above cube top (0.28 m)
-//   Finger tips (≈ 8 cm below EE)  →  z ≈ 0.220 m  ≈ table surface  ✓
-// Tune ± 5 mm if fingers still clip the table or miss the cube.
-static constexpr double GRASP_OFFSET_X =  0.033;   // m
+//   GRASP_OFFSET_Z = 0.106 m  →  EE at 0.280 + 0.106 = 0.386 m
+//   Finger tips (≈ 8 cm below EE)  →  z ≈ 0.306 m
+static constexpr double GRASP_OFFSET_X =  0.11;   // m
 static constexpr double GRASP_OFFSET_Y =  0.0;    // m
-static constexpr double GRASP_OFFSET_Z =  0.136;  // m — EE above cube top
-
+static constexpr double GRASP_OFFSET_Z =  0.11;  // m — EE above cube top
 
 // ── Hover height above cube for wrist cam visibility ──────────────────────────
 static constexpr double WRIST_CAM_LOOK_X_OFFSET = 0.0;  // m (computed for 25deg pitch view)
 static constexpr double WRIST_CAM_LOOK_Y_OFFSET = 0.0;  // m
-static constexpr double WRIST_CAM_HOVER_HEIGHT  = 0.24;  // m above grasp Z
+static constexpr double WRIST_CAM_HOVER_HEIGHT  = 0.21;  // m above cube top
 
 // ── Post-grasp lift height ────────────────────────────────────────────────────
 static constexpr double LIFT_HEIGHT = 0.1;  // m

@@ -75,9 +75,9 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS
-  scripts/aruco_detector.py
+  scripts/cube_detector.py
+  scripts/cube_pose_visualizer.py
   scripts/camera_publisher.py
-  scripts/aruco_pose_visualizer.py
   scripts/wrist_servo_base.py
   scripts/right_wrist_servo.py
   scripts/left_wrist_servo.py

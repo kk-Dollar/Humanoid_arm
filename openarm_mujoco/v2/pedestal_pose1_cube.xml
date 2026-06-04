@@ -14,16 +14,21 @@
   <option timestep="0.001" />
 
   <visual>
-    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
-    <rgba haze="0.15 0.25 0.35 1" />
+    <!-- Increased ambient + diffuse so cube colour is rich and well-saturated -->
+    <headlight diffuse="0.8 0.8 0.8" ambient="0.5 0.5 0.5" specular="0 0 0" />
+    <rgba haze="0.10 0.18 0.28 1" />
     <global azimuth="0" elevation="0" />
     <quality shadowsize="8192" />
   </visual>
 
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+    <!-- Neutral grey-blue table for maximum contrast against orange cube -->
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.35 0.35 0.40" rgb2="0.25 0.25 0.30"
+             markrgb="0.55 0.55 0.60" width="300" height="300" />
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.05" />
     <material name="openarm_body_link0_material" rgba="0.247 0.247 0.247 1.0" reflectance="0.05" shininess="0.5" />
 
     <mesh name="body_link0" content_type="model/stl" file="visual/body/body_link0.stl" scale="0.001 0.001 0.001" />
@@ -33,8 +38,15 @@
   </asset>
 
   <worldbody>
-    <light pos="0 0 2" dir="0 0 -1" directional="true" />
+    <!-- Global fill light -->
+    <light pos="0 0 2.5" dir="0 0 -1" directional="true"
+           diffuse="0.6 0.6 0.6" specular="0 0 0" />
+    <!-- Second directional light angled toward the cube workspace area -->
+    <!-- Angled slightly from above-front to illuminate the cube top face -->
+    <light pos="0.15 -0.10 1.0" dir="0 0.1 -1" directional="true"
+           diffuse="0.8 0.75 0.70" specular="0 0 0" />
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
+
 
     
     <geom name="openarm_body_link0_visual" type="mesh" mesh="body_link0" class="visual" material="openarm_body_link0_material" />
@@ -44,6 +56,7 @@
     
     <geom name="chest_camera_mount_geom" pos="0.05 0.00 0.63" type="box" size="0.02 0.04 0.02" rgba="0.2 0.2 0.2 1.0" contype="0" conaffinity="0" />
     <camera name="chest_cam" pos="0.05 0.00 0.63" fovy="60" xyaxes="-0.7654 -0.6436 0.0000 0.4933 -0.5866 0.6423" />
+    <!-- Depth is rendered from chest_cam itself (enable_depth_rendering toggle) — no separate camera needed -->
 
     
     <frame pos="0 0 0.698">
@@ -56,26 +69,14 @@
     </body>
 
     
+    <!-- Orange cube — no ArUco marker needed; YOLO detects it by color/shape -->
     <body name="test_cube_pose1" pos="0.15 -0.1 0.25">
       <freejoint name="test_cube_free" />
       <inertial pos="0 0 0" mass="0.05" diaginertia="8e-6 8e-6 8e-6" />
-      <geom name="test_cube_geom" type="box" size="0.035 0.035 0.03" rgba="1.0 0.45 0.05 1.0" contype="1" conaffinity="1" condim="4" friction="5.0 0.5 0.1" solref="0.002 1" solimp="0.95 0.99 0.001" />
-      
-      <geom name="test_cube_aruco_margin" pos="0 0 0.0305" type="box" size="0.03 0.03 0.0005" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="test_cube_aruco_base" pos="0 0 0.0315" type="box" size="0.025 0.025 0.0005" rgba="0 0 0 1" contype="0" conaffinity="0" />
-
-      
-      <geom name="aruco_w_1_1" type="box" pos="0.0125 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_1_3" type="box" pos="-0.004167 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_1_4" type="box" pos="-0.0125 0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-
-      <geom name="aruco_w_2_2" type="box" pos="0.004167 0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_2_4" type="box" pos="-0.0125 0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-
-      <geom name="aruco_w_3_3" type="box" pos="-0.004167 -0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-      <geom name="aruco_w_3_4" type="box" pos="-0.0125 -0.004167 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
-
-      <geom name="aruco_w_4_3" type="box" pos="-0.004167 -0.0125 0.0321" size="0.004166 0.004166 0.0001" rgba="1 1 1 1" contype="0" conaffinity="0" />
+      <geom name="test_cube_geom" type="box" size="0.035 0.035 0.035"
+            rgba="1.0 0.45 0.05 1.0"
+            contype="1" conaffinity="1" condim="4"
+            friction="5.0 0.5 0.1" solref="0.002 1" solimp="0.95 0.99 0.001" />
     </body>
   </worldbody>
 

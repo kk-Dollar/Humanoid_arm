@@ -74,8 +74,9 @@ class MujocoCameraPublisher(Node):
                 continue
             self.cam_source_name[ros_cam_name] = source_name
 
-        # Single shared renderer for all cameras to prevent OpenGL context collision and view bleeding.
-        # Initialize at chest camera's max resolution (640x480)
+        # Single shared renderer — one OpenGL context for ALL cameras (color + depth).
+        # Using two Renderer instances causes an OpenGL context collision and segfault.
+        # Depth is rendered by toggling enable_depth_rendering() within each tick.
         self.renderer = mujoco.Renderer(self.model, height=chest_h, width=chest_w)
 
         # Publication: camera image data flowing to perception nodes.
@@ -90,6 +91,9 @@ class MujocoCameraPublisher(Node):
             "right_wrist_cam": self.create_publisher(CameraInfo, "/right_wrist_cam/camera_info", 10),
             "left_wrist_cam": self.create_publisher(CameraInfo, "/left_wrist_cam/camera_info", 10),
         }
+        # Publication: depth image and info for YOLO pose estimation.
+        self.depth_img_pub = self.create_publisher(Image, "/chest_cam/depth/image_raw", 10)
+        self.depth_info_pub = self.create_publisher(CameraInfo, "/chest_cam/depth/camera_info", 10)
 
         self.tf_static_pub = StaticTransformBroadcaster(self)
         self.publish_camera_static_transforms()
@@ -186,11 +190,21 @@ class MujocoCameraPublisher(Node):
 
     def publish_tick(self) -> None:
         """
-        WHAT: Renders each configured camera and publishes image + camera_info.
-        WHY: Provides real-time camera streams for ArUco detector.
+        WHAT: Renders each configured camera and publishes image + camera_info,
+              plus depth image from the registered chest depth camera.
+        WHY: Provides real-time camera streams for YOLO + depth detector.
         INPUT: Timer callback at configured publish rate.
-        OUTPUT: /<cam>/image_raw and /<cam>/camera_info publications.
+        OUTPUT: /<cam>/image_raw, /<cam>/camera_info, and depth publications.
         """
+        try:
+            self._publish_tick_impl()
+        except KeyboardInterrupt:
+            pass  # SIGINT during render — skip this tick, node will exit on next spin
+        except Exception as exc:  # pylint: disable=broad-except
+            self.get_logger().warn(f"publish_tick error: {exc}", throttle_duration_sec=2.0)
+
+    def _publish_tick_impl(self) -> None:
+        """Internal implementation of publish_tick — see publish_tick() for docs."""
         mujoco.mj_forward(self.model, self.data)
         stamp = self.get_clock().now().to_msg()
 
@@ -202,7 +216,8 @@ class MujocoCameraPublisher(Node):
 
             self.renderer.update_scene(self.data, camera=source_name)
             rgb = self.renderer.render()
-            rgb = np.flipud(rgb)
+            # NOTE: renderer.render() already flips vertically (MuJoCo renderer.py line 251)
+            # Do NOT call np.flipud here — it would double-flip the image.
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
             # Downsample if target dimension is smaller than the 640x480 renderer buffer (e.g. wrist cams 320x240)
@@ -219,6 +234,39 @@ class MujocoCameraPublisher(Node):
             info_msg.header.frame_id = ros_cam_name
             self.info_pubs[ros_cam_name].publish(info_msg)
 
+        # ── Depth image ────────────────────────────────────────────────────────
+        # Re-render all configured cameras in depth mode.
+        # Depth is pixel-registered to the RGB image (identical camera extrinsics).
+        self.renderer.enable_depth_rendering()
+        try:
+            for ros_cam_name in self.camera_cfg:
+                if ros_cam_name not in self.cam_source_name:
+                    continue
+                
+                depth_source = self.cam_source_name[ros_cam_name]
+                self.renderer.update_scene(self.data, camera=depth_source)
+                _, width, height = self.camera_cfg[ros_cam_name]
+                depth_m = self.renderer.render()  # float32 (H, W), already in metres
+                
+                if width != depth_m.shape[1] or height != depth_m.shape[0]:
+                    depth_m = cv2.resize(depth_m, (width, height), interpolation=cv2.INTER_NEAREST)
+                
+                img_msg = self.bridge.cv2_to_imgmsg(depth_m.astype(np.float32), encoding="32FC1")
+                img_msg.header.stamp = stamp
+                img_msg.header.frame_id = ros_cam_name
+
+                pub_name = f"{ros_cam_name}_depth"
+                if not hasattr(self, "depth_pubs"):
+                    self.depth_pubs = {}
+                if pub_name not in self.depth_pubs:
+                    self.depth_pubs[pub_name] = self.create_publisher(Image, f"/{ros_cam_name}/depth/image_raw", 10)
+
+                self.depth_pubs[pub_name].publish(img_msg)
+        except Exception as exc:
+            self.get_logger().warn(f"Depth render failed: {exc}", throttle_duration_sec=5.0)
+        finally:
+            self.renderer.disable_depth_rendering()
+
 
 def main(args=None) -> None:
     """
@@ -231,9 +279,14 @@ def main(args=None) -> None:
     node = MujocoCameraPublisher()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass  # Clean Ctrl-C / SIGINT shutdown — no traceback
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception:  # pylint: disable=broad-except
+            pass  # Already shutdown via signal handler — safe to ignore
 
 
 if __name__ == "__main__":

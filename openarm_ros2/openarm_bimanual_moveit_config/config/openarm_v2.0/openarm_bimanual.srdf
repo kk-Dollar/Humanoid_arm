@@ -42,10 +42,10 @@ limitations under the License.
     </group>
 
     <group_state name="close_gripper" group="left_gripper">
-        <joint name="openarm_left_finger_joint1" value="0.0"/>
+        <joint name="openarm_left_finger_joint1" value="0.3"/>
     </group_state>
     <group_state name="close_gripper" group="right_gripper">
-        <joint name="openarm_right_finger_joint1" value="0.0"/>
+        <joint name="openarm_right_finger_joint1" value="-0.3"/>
     </group_state>
     <group_state name="open_gripper" group="left_gripper">
         <joint name="openarm_left_finger_joint1" value="0.7"/>

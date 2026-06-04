@@ -81,11 +81,15 @@ def robot_nodes_spawner(
     )
 
     # MuJoCo-backed ros2_control_node. This hosts controller_manager and the MuJoCo viewer/physics thread.
+    # NOTE: mujoco_ros2_control crashes in libGLdispatch during shutdown (known upstream bug).
+    # sigterm_timeout prevents this from being treated as an unexpected death by the launch system.
     control_node = Node(
         package="mujoco_ros2_control",
         executable="ros2_control_node",
         output="both",
         parameters=[robot_description_param, controllers_file_str],
+        sigterm_timeout="2",
+        sigkill_timeout="5",
     )
 
     return [robot_state_pub_node, control_node]
@@ -162,6 +166,8 @@ def moveit_nodes_spawner(context: LaunchContext, use_fake_hardware, mujoco_model
             output="log",
             arguments=["-d", rviz_cfg],
             parameters=[moveit_params],
+            sigterm_timeout="2",
+            sigkill_timeout="5",
         ),
     ]
 
@@ -248,11 +254,18 @@ def generate_launch_description():
         ],
     )
 
-    aruco_detector = Node(
+    cube_detector = Node(
         package="arm_commander",
-        executable="aruco_detector.py",
-        name="aruco_detector",
+        executable="cube_detector.py",
+        name="cube_detector",
         output="screen",
+        parameters=[{
+            # Cube colour is read automatically from the MuJoCo model
+            "mujoco_model_path": mujoco_model_path,
+            "debug_viz":          True,
+            "ema_alpha":          0.25,
+            "depth_patch_radius": 5,
+        }],
     )
 
     right_wrist_servo = Node(
@@ -264,8 +277,7 @@ def generate_launch_description():
             "pixel_threshold":    8.0,
             "servo_gain":         0.003,
             "use_color_fallback": True,
-            "marker_size_m":      0.05,
-            "marker_id":          0,
+            "mujoco_model_path":  mujoco_model_path,
         }],
     )
 
@@ -278,9 +290,15 @@ def generate_launch_description():
             "pixel_threshold":    8.0,
             "servo_gain":         0.003,
             "use_color_fallback": True,
-            "marker_size_m":      0.05,
-            "marker_id":          0,
+            "mujoco_model_path":  mujoco_model_path,
         }],
+    )
+
+    cube_pose_visualizer = Node(
+        package="arm_commander",
+        executable="cube_pose_visualizer.py",
+        name="cube_pose_visualizer",
+        output="screen",
     )
 
     return LaunchDescription(
@@ -289,9 +307,10 @@ def generate_launch_description():
             robot_nodes_spawner_func,
             moveit_nodes_func,
             camera_publisher,
-            TimerAction(period=4.0, actions=[aruco_detector]),
+            TimerAction(period=4.0, actions=[cube_detector]),
             TimerAction(period=4.0, actions=[right_wrist_servo]),
             TimerAction(period=4.0, actions=[left_wrist_servo]),
+            TimerAction(period=4.0, actions=[cube_pose_visualizer]),
             TimerAction(period=2.0, actions=[jsb_spawner]),
             TimerAction(period=3.0, actions=[trajectory_spawner]),
             TimerAction(period=3.0, actions=[gripper_spawner]),
